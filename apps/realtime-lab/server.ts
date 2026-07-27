@@ -389,13 +389,19 @@ function restoreLabState(snapshot: PersistedLabSnapshot): LabState {
 
 function publicSnapshot(state: LabState) {
   const token = state.engine.getToken(SYNTHETIC.tokenId);
+  const device = state.engine.getDevice(SYNTHETIC.deviceId);
   const transaction = state.transaction
     ? state.engine.getTransaction(state.transaction.transactionId)
     : undefined;
   return {
     simulator: true,
     notice: "Synthetic reference implementation. No PAN, bank, wallet, processor, or payment rail is connected.",
-    device: state.engine.getDevice(SYNTHETIC.deviceId),
+    device: device ? {
+      deviceId: device.deviceId,
+      subjectId: device.subjectId,
+      keyId: device.keyId,
+      status: device.status,
+    } : undefined,
     token,
     provisioning: state.provisioning,
     transaction,

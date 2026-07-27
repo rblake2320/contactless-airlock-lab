@@ -4,6 +4,8 @@ export type ChallengePurpose =
   | "provision-payment-token"
   | "confirm-transaction";
 
+export type ApprovalAlgorithm = "airlock.ecdsa-p256-sha256-der.v1";
+
 export interface ChallengeBinding {
   protocolVersion: "airlock.v1";
   purpose: ChallengePurpose;
@@ -24,6 +26,7 @@ export interface ChallengeBinding {
 export interface SignedApproval {
   binding: ChallengeBinding;
   keyId: string;
+  algorithm: ApprovalAlgorithm;
   signature: string;
 }
 
@@ -60,4 +63,3 @@ export type ProvisioningState =
   | "token_active_full"
   | "declined"
   | "expired";
-

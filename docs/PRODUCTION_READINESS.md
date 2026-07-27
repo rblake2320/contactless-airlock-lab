@@ -26,7 +26,9 @@ All items below must be complete before proposing a controlled partner pilot.
       are implemented and exercised.
 - [ ] Approval verification reconstructs or compares issuer-owned state before
       one-time consumption.
-- [ ] Algorithm agility and downgrade rejection are documented and tested.
+- [x] Approval algorithm profile is versioned and signed; enrollment,
+      verification, and restore reject unknown, missing, mismatched, and
+      wrong-curve profiles without fallback.
 - [ ] An independent cryptographic/protocol review has no unresolved critical
       or high findings.
 
@@ -71,8 +73,11 @@ All items below must be complete before proposing a controlled partner pilot.
 
 ### Privacy, operations, and customer safety
 
+- [x] Current synthetic simulator data has a field-level inventory with purpose,
+      location, current retention/deletion limits, and downstream status.
 - [ ] Data inventory identifies purpose, lawful basis, location, retention,
-      deletion, access, and downstream disclosure for each data class.
+      deletion, access, and downstream disclosure for each production data
+      class and approved integration.
 - [ ] Production, staging, demonstration, and development identities, keys,
       credentials, and telemetry are isolated.
 - [ ] Device loss, account recovery, false decline, fraudulent approval, and
@@ -86,11 +91,15 @@ All items below must be complete before proposing a controlled partner pilot.
 
 ### Evidence and delivery
 
-- [ ] The default CI gate passes from a clean checkout using `npm ci` without
-      credentials.
+- [x] The default CI definition verifies a pristine checkout before locked
+      `npm ci --ignore-scripts`; a successful hosted run remains release
+      evidence rather than an inference from configuration.
 - [ ] Live partner tests are isolated, opt-in, and never run on pull requests.
-- [ ] A release records commit, lockfile, build provenance, test evidence,
-      environment, and all simulated versus real boundaries.
+- [x] A bounded machine-readable bundle records commit, lockfile hash, Node and
+      Python versions, normalized test/scenario evidence, and simulated versus
+      real boundaries from a clean checkout.
+- [ ] Signed build provenance and artifact attestation remain unimplemented;
+      the release-evidence bundle explicitly claims neither.
 - [ ] Performance evidence states hardware, concurrency, dataset, warm/cold
       state, and partner/simulator involvement.
 - [ ] Documentation and demonstrations use the release-language restrictions

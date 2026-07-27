@@ -90,11 +90,26 @@ Passing repository tests is evidence about the tested lab behavior only. It is
 not evidence of PCI compliance, network certification, regulatory approval, or
 production authorization.
 
+The simulator's field-level purposes, locations, retention behavior, deletion
+limits, and current downstream status are recorded in
+[docs/DATA_INVENTORY.md](docs/DATA_INVENTORY.md). That inventory explicitly
+includes the exportable synthetic private key used by persistent demonstrations
+and does not approve the same design for production.
+
+The simulator audit log is an unkeyed SHA-256 hash chain. It detects accidental
+damage or mutation when the stored chain tip and prior events remain trusted,
+but it does not authenticate the history against an attacker who can replace
+the entire SQLite snapshot and recompute every hash. The SQLite file is therefore
+inside the trusted boundary of this local lab. Production evidence requires an
+append-only external sink and an HMAC, digital signature, or independently
+anchored chain tip whose key or trust anchor is not stored beside the database.
+
 The repository CI performs strict TypeScript checking, executable lab checks,
 a dependency vulnerability audit, an obvious-credential precheck, full-history
 Gitleaks scanning, CodeQL JavaScript/TypeScript analysis, and CycloneDX SBOM
-generation without repository secrets. Third-party and GitHub actions are
-pinned to reviewed commit SHAs. These controls are baseline hygiene, not a
+generation without repository secrets. GitHub actions are pinned to reviewed
+commit SHAs; downloaded scanner archives are version-pinned and checksum
+verified before execution. These controls are baseline hygiene, not a
 replacement for dependency-review policy, artifact attestation, signed-build
 provenance, penetration testing, independent workflow/action review, or partner
 security assessment. There is no deployable container in this repository, so

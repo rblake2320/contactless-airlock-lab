@@ -1,6 +1,11 @@
 import { AuditLog, type AuditLogSnapshot } from "../../packages/audit/auditLog.ts";
 import { timingSafeEqual } from "node:crypto";
-import type { DeviceKeyPair } from "../../packages/crypto/deviceKeys.ts";
+import {
+  APPROVAL_ALGORITHM,
+  validatePublicKeyProfile,
+  type DeviceKeyPair,
+} from "../../packages/crypto/deviceKeys.ts";
+import type { ApprovalAlgorithm } from "../../packages/protocol/types.ts";
 import type {
   ChallengeBinding,
   ProvisioningState,
@@ -21,6 +26,7 @@ export interface TrustedDevice {
   deviceId: string;
   subjectId: string;
   keyId: string;
+  algorithm: ApprovalAlgorithm;
   publicKeyPem: string;
   status: "active" | "revoked";
 }
@@ -55,7 +61,7 @@ export interface TransactionRecord {
 }
 
 export interface AirlockEngineSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 2;
   audit: AuditLogSnapshot;
   challenges: ChallengeStoreSnapshot;
   devices: TrustedDevice[];
@@ -82,7 +88,7 @@ export class AirlockEngine {
   static restore(snapshot: AirlockEngineSnapshot): AirlockEngine {
     if (
       !snapshot ||
-      snapshot.schemaVersion !== 1 ||
+      snapshot.schemaVersion !== 2 ||
       !Array.isArray(snapshot.devices) ||
       !Array.isArray(snapshot.tokens) ||
       !Array.isArray(snapshot.provisioning) ||
@@ -101,11 +107,13 @@ export class AirlockEngine {
         typeof device.deviceId !== "string" ||
         typeof device.subjectId !== "string" ||
         typeof device.keyId !== "string" ||
+        device.algorithm !== APPROVAL_ALGORITHM ||
         typeof device.publicKeyPem !== "string" ||
         !["active", "revoked"].includes(device.status)
       ) {
         throw new Error("invalid trusted device snapshot");
       }
+      validatePublicKeyProfile(device.publicKeyPem, device.algorithm);
       engine.#restoreUnique(engine.#devices, device.deviceId, device, "trusted device");
     }
     for (const token of snapshot.tokens) {
@@ -242,7 +250,7 @@ export class AirlockEngine {
 
   snapshot(): AirlockEngineSnapshot {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       audit: this.audit.snapshot(),
       challenges: this.challenges.snapshot(),
       devices: structuredClone([...this.#devices.values()]),
@@ -258,14 +266,16 @@ export class AirlockEngine {
 
   enrollTrustedDevice(
     subjectId: string,
-    keys: Pick<DeviceKeyPair, "keyId" | "publicKeyPem">,
+    keys: Pick<DeviceKeyPair, "keyId" | "algorithm" | "publicKeyPem">,
     deviceId: string = crypto.randomUUID(),
   ): TrustedDevice {
     if (this.#devices.has(deviceId)) throw new Error("trusted device id already exists");
+    validatePublicKeyProfile(keys.publicKeyPem, keys.algorithm);
     const device: TrustedDevice = {
       deviceId,
       subjectId,
       keyId: keys.keyId,
+      algorithm: keys.algorithm,
       publicKeyPem: keys.publicKeyPem,
       status: "active",
     };
@@ -274,6 +284,7 @@ export class AirlockEngine {
       deviceId,
       subjectId,
       keyId: keys.keyId,
+      algorithm: keys.algorithm,
     });
     return structuredClone(device);
   }
@@ -359,7 +370,12 @@ export class AirlockEngine {
     const request = this.#must(this.#provisioning, requestId, "provisioning request");
     const device = this.#requireActiveDevice(request.trustedDeviceId);
     if (approval.keyId !== device.keyId) throw new Error("device key id mismatch");
-    this.challenges.consume(approval, device.publicKeyPem, now);
+    this.challenges.consume(
+      approval,
+      device.publicKeyPem,
+      now,
+      device.algorithm,
+    );
     request.state = transitionProvisioning(request.state, "approved");
     request.state = transitionProvisioning(
       request.state,
@@ -470,7 +486,12 @@ export class AirlockEngine {
     if (!transaction.challenge) throw new Error("transaction has no challenge");
     const device = this.#requireActiveDevice(transaction.challenge.trustedDeviceId);
     if (approval.keyId !== device.keyId) throw new Error("device key id mismatch");
-    this.challenges.consume(approval, device.publicKeyPem, now);
+    this.challenges.consume(
+      approval,
+      device.publicKeyPem,
+      now,
+      device.algorithm,
+    );
     transaction.state = transitionTransaction(transaction.state, "confirmed");
     this.audit.append("transaction.confirmed", transactionId, {
       challengeId: approval.binding.challengeId,

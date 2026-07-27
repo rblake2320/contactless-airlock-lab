@@ -14,7 +14,12 @@ most dangerous to postpone:
 
 `BEGIN IMMEDIATE` serializes each compound write transaction. SQLite WAL mode,
 full synchronous writes, foreign-key checking, and a bounded busy timeout are
-enabled on every connection. Two independent connections are used in tests to
+enabled on every connection. Node 24 or newer is required because the
+`DatabaseSync` constructor timeout installs the busy handler before the first
+PRAGMA; a later `PRAGMA busy_timeout` alone cannot protect opening a database
+while another process already holds its write lock. A regression test holds
+that lock in an independent process and proves a new store waits and opens
+within the configured timeout. Two independent connections are used in tests to
 prove stale compare-and-swap rejection and outbox lease exclusion. Closing and
 reopening the database proves restart persistence and expired leases provide
 at-least-once redelivery.

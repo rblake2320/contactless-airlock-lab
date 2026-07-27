@@ -10,11 +10,12 @@
     "demo": "node --experimental-strip-types tools/demo.ts",
     "lab": "node --experimental-strip-types apps/realtime-lab/server.ts",
     "scenarios": "node --experimental-strip-types tools/scenarios.ts",
+    "release:evidence": "node --experimental-strip-types tools/release-evidence.ts",
     "check": "npm run typecheck && npm test && npm run scenarios",
     "security:audit": "npm audit --audit-level=high"
   },
   "engines": {
-    "node": ">=22.6"
+    "node": ">=24.0"
   },
   "devDependencies": {
     "@types/node": "24.13.3",

@@ -84,7 +84,10 @@ export class DurableStore implements MutationTransaction {
 
   constructor(path: string) {
     if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.#db = new DatabaseSync(path);
+    // Node 24+ installs SQLite's busy handler during open. This protects the
+    // constructor and the first journal-mode PRAGMA; setting busy_timeout only
+    // in a later PRAGMA is too late when another process already holds a lock.
+    this.#db = new DatabaseSync(path, { timeout: 5_000 });
     this.#db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
     this.#migrate();
   }

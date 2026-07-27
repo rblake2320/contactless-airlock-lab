@@ -32,7 +32,7 @@ const document = JSON.parse(
 test("TypeScript matches every versioned canonical byte and hash vector", () => {
   assert.equal(document.schemaVersion, "airlock.canonical-vectors.v1");
   const valid = document.vectors.filter((vector) => vector.valid);
-  assert.equal(valid.length, 3);
+  assert.equal(valid.length, 7);
   for (const vector of valid) {
     const bytes = Buffer.from(
       canonicalizeBinding(vector.binding as ChallengeBinding),
@@ -74,6 +74,36 @@ test("TypeScript rejects every invalid cross-language vector", () => {
   }
 });
 
+test("numeric wire aliases converge while NFC and NFD opaque IDs remain distinct", () => {
+  const byId = new Map(document.vectors.map((vector) => [vector.id, vector]));
+  const exponent = byId.get("transaction-exponent-integer")!;
+  const decimal = byId.get("transaction-decimal-integer")!;
+  assert.equal(
+    (exponent.binding as ChallengeBinding).amountMinor,
+    1_000,
+  );
+  assert.equal(
+    (decimal.binding as ChallengeBinding).amountMinor,
+    1_000,
+  );
+  for (const vector of [exponent, decimal]) {
+    const canonical = Buffer.from(
+      canonicalizeBinding(vector.binding as ChallengeBinding),
+    ).toString("utf8");
+    assert.match(canonical, /"amountMinor":1000/);
+    assert.doesNotMatch(canonical, /1e3|1000\.0/);
+  }
+
+  const nfc = byId.get("opaque-id-nfc")!;
+  const nfd = byId.get("opaque-id-nfd")!;
+  const nfcSubject = (nfc.binding as ChallengeBinding).subjectId;
+  const nfdSubject = (nfd.binding as ChallengeBinding).subjectId;
+  assert.equal(nfcSubject.normalize("NFC"), nfdSubject.normalize("NFC"));
+  assert.notEqual(nfcSubject, nfdSubject);
+  assert.notEqual(nfc.canonicalBase64, nfd.canonicalBase64);
+  assert.notEqual(nfc.sha256, nfd.sha256);
+});
+
 test("independent Python stdlib verifier matches bytes, hashes, and rejection set", () => {
   const python = process.platform === "win32" ? "python" : "python3";
   const verifier = fileURLToPath(
@@ -91,7 +121,7 @@ test("independent Python stdlib verifier matches bytes, hashes, and rejection se
   );
   assert.deepEqual(JSON.parse(result.stdout), {
     ok: true,
-    valid: 3,
+    valid: 7,
     invalid: 12,
   });
 });
