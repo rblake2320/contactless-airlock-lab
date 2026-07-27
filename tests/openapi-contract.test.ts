@@ -6,8 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   createLabServer,
+  REASON_CODES,
   REALTIME_LAB_API_ROUTES,
 } from "../apps/realtime-lab/server.ts";
+import { DurableStore } from "../packages/storage/durableStore.ts";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: any };
@@ -46,7 +48,9 @@ function validate(value: Json, candidate: ObjectValue, location = "$"): void {
       }
     });
     assert.equal(matches.length, 1, `${location}: expected exactly one oneOf match`);
-    return;
+  }
+  if (schema.not) {
+    assert.throws(() => validate(value, schema.not, location), `${location}: not`);
   }
   if ("const" in schema) assert.deepEqual(value, schema.const, `${location}: const`);
   if (schema.enum) assert.ok(schema.enum.includes(value), `${location}: enum`);
@@ -225,6 +229,38 @@ test("all references resolve and every mutation declares real controls and error
   const idempotency = contract.components.parameters.IdempotencyKey;
   assert.equal(idempotency.schema.maxLength, 128);
   assert.equal(idempotency["x-requiredWhen"], "AIRLOCK_DB_PATH is set");
+  assert.deepEqual(
+    contract.components.schemas.ReasonCode.enum,
+    [...REASON_CODES],
+    "runtime and OpenAPI reason-code vocabularies drifted",
+  );
+  assert.throws(
+    () => validate(
+      { code: "UNDECLARED_CODE", error: "message" },
+      contract.components.schemas.SimpleError,
+    ),
+    /enum/,
+  );
+  const lastResult = contract.components.schemas.LastResult;
+  validate({
+    ok: true,
+    outcome: "accepted",
+    code: "RESET",
+    action: "reset",
+    message: "reset",
+    at: new Date().toISOString(),
+  }, lastResult);
+  assert.throws(
+    () => validate({
+      ok: true,
+      outcome: "accepted",
+      code: "INTERNAL_ERROR",
+      action: "broken",
+      message: "broken",
+      at: new Date().toISOString(),
+    }, lastResult),
+    /oneOf/,
+  );
 });
 
 test("live success, conflict, and SSE payloads conform to declared schemas", async () => {
@@ -264,6 +300,71 @@ test("live success, conflict, and SSE payloads conform to declared schemas", asy
   }
 });
 
+test("live accepted, warning, and blocked results use declared stable codes", async () => {
+  const lab = await listen();
+  const expectResult = async (
+    path: string,
+    expectedCode: string,
+    body?: Record<string, unknown>,
+  ) => {
+    const response = await post(
+      lab.baseUrl,
+      path,
+      body ? JSON.stringify(body) : undefined,
+      body ? { "content-type": "application/json" } : {},
+    );
+    assert.equal(response.status, 200, `${path}: status`);
+    const payload = await response.json() as ObjectValue;
+    validate(payload, contract.components.schemas.PublicState);
+    assert.equal(payload.lastResult.code, expectedCode, `${path}: result code`);
+    assert.ok(REASON_CODES.includes(payload.lastResult.code));
+    return payload;
+  };
+  try {
+    const initial = await (await fetch(`${lab.baseUrl}/api/state`)).json() as ObjectValue;
+    assert.equal(initial.lastResult.code, "RESET");
+    await expectResult("/api/provision/request", "PROVISIONING_REQUESTED");
+    await expectResult("/api/provision/approve", "PROVISIONING_APPROVED");
+    await expectResult("/api/transaction/request", "TRANSACTION_PENDING", {
+      amount: "1.00",
+      merchantId: "merchant",
+    });
+    await expectResult("/api/transaction/confirm", "TRANSACTION_CONFIRMED");
+    await expectResult("/api/transaction/clear", "TRANSACTION_SETTLED");
+
+    await expectResult("/api/reset", "RESET");
+    await expectResult("/api/provision/request", "PROVISIONING_REQUESTED");
+    await expectResult("/api/provision/approve", "PROVISIONING_APPROVED");
+    await expectResult("/api/transaction/request", "TRANSACTION_PENDING", {
+      amount: "1.00",
+      merchantId: "merchant",
+    });
+    await expectResult("/api/transaction/expire", "TRANSACTION_EXPIRED_REVERSED");
+    const warning = await expectResult(
+      "/api/transaction/clear",
+      "CLEARING_AFTER_REVERSAL",
+    );
+    assert.equal(warning.lastResult.outcome, "warning");
+
+    await expectResult("/api/reset", "RESET");
+    await expectResult("/api/device/revoke", "DEVICE_REVOKED");
+    await expectResult("/api/reset", "RESET");
+    await expectResult("/api/provision/request", "PROVISIONING_REQUESTED");
+    await expectResult("/api/provision/approve", "PROVISIONING_APPROVED");
+    await expectResult("/api/transaction/request", "TRANSACTION_PENDING", {
+      amount: "1.00",
+      merchantId: "merchant",
+    });
+    const blocked = await expectResult(
+      "/api/demonstrate/altered-merchant",
+      "ATTACK_BLOCKED",
+    );
+    assert.equal(blocked.lastResult.outcome, "blocked");
+  } finally {
+    await lab.close();
+  }
+});
+
 test("live request failures use documented statuses and exact error shapes", async () => {
   const lab = await listen();
   try {
@@ -276,11 +377,18 @@ test("live request failures use documented statuses and exact error shapes", asy
     for (const [index, expected] of [400, 403, 413, 415].entries()) {
       const response = cases[index];
       assert.equal(response.status, expected);
-      validate(await response.json() as Json, contract.components.schemas.SimpleError);
+      const payload = await response.json() as ObjectValue;
+      validate(payload, contract.components.schemas.SimpleError);
+      assert.equal(
+        payload.code,
+        ["MALFORMED_JSON", "CROSS_ORIGIN_REJECTED", "PAYLOAD_TOO_LARGE", "UNSUPPORTED_MEDIA_TYPE"][index],
+      );
     }
     const missing = await fetch(`${lab.baseUrl}/api/not-real`);
     assert.equal(missing.status, 404);
-    validate(await missing.json() as Json, contract.components.schemas.SimpleError);
+    const missingPayload = await missing.json() as ObjectValue;
+    validate(missingPayload, contract.components.schemas.SimpleError);
+    assert.equal(missingPayload.code, "NOT_FOUND");
   } finally {
     await lab.close();
   }
@@ -290,14 +398,131 @@ test("live request failures use documented statuses and exact error shapes", asy
   try {
     const required = await post(persistent.baseUrl, "/api/reset");
     assert.equal(required.status, 428);
-    validate(await required.json() as Json, contract.components.schemas.SimpleError);
+    const requiredPayload = await required.json() as ObjectValue;
+    validate(requiredPayload, contract.components.schemas.SimpleError);
+    assert.equal(requiredPayload.code, "IDEMPOTENCY_KEY_REQUIRED");
     const tooLong = await post(persistent.baseUrl, "/api/reset", undefined, {
       "idempotency-key": `a${"b".repeat(128)}`,
     });
     assert.equal(tooLong.status, 431);
-    validate(await tooLong.json() as Json, contract.components.schemas.SimpleError);
+    const tooLongPayload = await tooLong.json() as ObjectValue;
+    validate(tooLongPayload, contract.components.schemas.SimpleError);
+    assert.equal(tooLongPayload.code, "IDEMPOTENCY_KEY_TOO_LONG");
   } finally {
     await persistent.close();
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("live domain rejection paths expose stable codes without message parsing", async () => {
+  const lab = await listen();
+  const request = async (
+    path: string,
+    expectedCode: string,
+    body?: Record<string, unknown>,
+  ) => {
+    const response = await post(
+      lab.baseUrl,
+      path,
+      body ? JSON.stringify(body) : undefined,
+      body ? { "content-type": "application/json" } : {},
+    );
+    const payload = await response.json() as ObjectValue;
+    assert.equal(response.status, 409, `${path}: status`);
+    assert.equal(payload.code, expectedCode, `${path}: code`);
+    assert.ok(typeof payload.error === "string" && payload.error.length > 0);
+    validate(payload, contract.components.schemas.StateError);
+  };
+  try {
+    await request("/api/provision/approve", "PROVISIONING_REQUIRED");
+    await post(lab.baseUrl, "/api/provision/request");
+    await request("/api/provision/request", "PROVISIONING_ALREADY_REQUESTED");
+    await request("/api/transaction/request", "TOKEN_NOT_SPENDABLE", {
+      amount: "1.00",
+      merchantId: "merchant",
+    });
+    await post(lab.baseUrl, "/api/provision/approve");
+    await request("/api/transaction/confirm", "TRANSACTION_REQUIRED");
+    await request("/api/transaction/request", "AMOUNT_NON_POSITIVE", {
+      amount: "0.00",
+      merchantId: "merchant",
+    });
+    await request("/api/transaction/request", "AMOUNT_FORMAT_INVALID", {
+      amount: "1.001",
+      merchantId: "merchant",
+    });
+    await request("/api/transaction/request", "MERCHANT_INVALID", {
+      amount: "1.00",
+      merchantId: "merchant with spaces",
+    });
+    await post(
+      lab.baseUrl,
+      "/api/transaction/request",
+      JSON.stringify({ amount: "1.00", merchantId: "merchant" }),
+      { "content-type": "application/json" },
+    );
+    await request("/api/transaction/request", "TRANSACTION_ALREADY_EXISTS", {
+      amount: "1.00",
+      merchantId: "merchant",
+    });
+    await request("/api/transaction/clear", "CLEARING_NOT_ALLOWED");
+    await post(lab.baseUrl, "/api/transaction/confirm");
+    await request("/api/transaction/confirm", "TRANSACTION_NOT_PENDING");
+    await post(lab.baseUrl, "/api/reset");
+    await post(lab.baseUrl, "/api/device/revoke");
+    await request("/api/device/revoke", "DEVICE_ALREADY_REVOKED");
+  } finally {
+    await lab.close();
+  }
+});
+
+test("persistence failures carry the declared 503 machine code", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "airlock-code-503-"));
+  const dbPath = join(directory, "lab.sqlite");
+  const lab = await listen({
+    dbPath,
+    storeFactory: (path: string) => {
+      const store = new DurableStore(path);
+      return {
+        get: store.get.bind(store),
+        create: store.create.bind(store),
+        compareAndSwap: store.compareAndSwap.bind(store),
+        getIdempotent: store.getIdempotent.bind(store),
+        runIdempotent: () => {
+          throw new Error("synthetic persistence outage");
+        },
+        close: store.close.bind(store),
+      };
+    },
+  });
+  try {
+    const response = await post(lab.baseUrl, "/api/reset", undefined, {
+      "idempotency-key": "force-503",
+    });
+    assert.equal(response.status, 503);
+    const payload = await response.json() as ObjectValue;
+    assert.equal(payload.code, "PERSISTENCE_UNAVAILABLE");
+    validate(payload, contract.components.schemas.StateError);
+  } finally {
+    await lab.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("security invariant failure is a coded HTTP 500 blocked result", async () => {
+  const lab = await listen({ auditCopyVerifier: () => true });
+  try {
+    const response = await post(lab.baseUrl, "/api/demonstrate/audit-tamper");
+    assert.equal(response.status, 500);
+    const payload = await response.json() as ObjectValue;
+    validate(
+      payload,
+      schemaFor("/api/demonstrate/audit-tamper", "post", 500),
+    );
+    assert.equal(payload.lastResult.code, "SECURITY_INVARIANT_FAILED");
+    assert.equal(payload.lastResult.ok, false);
+    assert.equal(payload.lastResult.outcome, "blocked");
+  } finally {
+    await lab.close();
   }
 });

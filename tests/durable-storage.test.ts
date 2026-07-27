@@ -174,11 +174,16 @@ test("released outbox event observes retry delay and rejects the wrong owner", (
   const event = store.enqueue("retry-key", "partner.notify", "aggregate", {}, start);
   store.claimOutbox("worker-a", 1, 5_000, start);
   assert.throws(
-    () => store.releaseOutbox(event.eventId, "worker-b", new Date(start.getTime() + 10_000)),
+    () => store.releaseOutbox(
+      event.eventId,
+      "worker-b",
+      new Date(start.getTime() + 10_000),
+      start,
+    ),
     /conflict/,
   );
   const retryAt = new Date(start.getTime() + 10_000);
-  store.releaseOutbox(event.eventId, "worker-a", retryAt);
+  store.releaseOutbox(event.eventId, "worker-a", retryAt, start);
   assert.deepEqual(
     store.claimOutbox("worker-b", 1, 5_000, new Date(retryAt.getTime() - 1)),
     [],

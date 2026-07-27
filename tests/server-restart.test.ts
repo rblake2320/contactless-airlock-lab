@@ -190,6 +190,44 @@ test("tampered simulator-key persistence fails closed during restore", async () 
   });
 });
 
+test("version-1 realtime snapshot migrates durably to coded version 2", async () => {
+  await withDatabase(async (dbPath) => {
+    const first = await start(dbPath);
+    await first.close();
+
+    const store = new DurableStore(dbPath);
+    const record = store.get<Record<string, any>>("realtime-lab:simulator-state")!;
+    const legacyLastResult = { ...record.value.lastResult };
+    delete legacyLastResult.code;
+    store.compareAndSwap(
+      "realtime-lab:simulator-state",
+      record.version,
+      record.status,
+      record.status,
+      {
+        ...record.value,
+        schemaVersion: 1,
+        lastResult: legacyLastResult,
+      },
+    );
+    store.close();
+
+    const migratedServer = await start(dbPath);
+    const publicState = await state(migratedServer.baseUrl);
+    assert.equal(publicState.lastResult.code, "RESET");
+    await migratedServer.close();
+
+    const reopened = new DurableStore(dbPath);
+    const migrated = reopened.get<Record<string, any>>(
+      "realtime-lab:simulator-state",
+    )!;
+    assert.equal(migrated.value.schemaVersion, 2);
+    assert.equal(migrated.value.lastResult.code, "RESET");
+    assert.equal(migrated.version, record.version + 2);
+    reopened.close();
+  });
+});
+
 test("persistence failure rolls memory back and cannot leak into a later save", async () => {
   await withDatabase(async (dbPath) => {
     class FailOnceStore extends DurableStore {
@@ -263,8 +301,10 @@ test("handler failure after engine mutation cannot commit partial protocol state
     const { port } = lab.address() as AddressInfo;
     const baseUrl = `http://127.0.0.1:${port}`;
     const failed = await post(baseUrl, "/api/provision/request");
-    assert.equal(failed.response.status, 409);
-    assert.match(failed.payload.error, /synthetic handler failure/);
+    assert.equal(failed.response.status, 500);
+    assert.equal(failed.payload.code, "INTERNAL_ERROR");
+    assert.equal(failed.payload.error, "Internal simulator error.");
+    assert.doesNotMatch(JSON.stringify(failed.payload), /synthetic handler failure/);
     assert.equal(failed.payload.state.provisioning, undefined);
     assert.equal(failed.payload.state.token, undefined);
     await new Promise<void>((resolve, reject) =>
@@ -277,7 +317,9 @@ test("handler failure after engine mutation cannot commit partial protocol state
     assert.equal(snapshot.audit.events.some(
       (event: { type: string }) => event.type === "provisioning.challenge_created",
     ), false);
-    assert.match(snapshot.lastResult.message, /synthetic handler failure/);
+    assert.equal(snapshot.lastResult.code, "INTERNAL_ERROR");
+    assert.equal(snapshot.lastResult.message, "Internal simulator error.");
+    assert.doesNotMatch(JSON.stringify(snapshot), /synthetic handler failure/);
     await restored.close();
   });
 });

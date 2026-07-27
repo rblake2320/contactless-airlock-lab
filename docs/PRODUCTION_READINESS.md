@@ -40,6 +40,11 @@ All items below must be complete before proposing a controlled partner pilot.
 - [ ] External mutations have durable idempotency records.
 - [ ] Transactional outbox and at-least-once consumers handle duplication,
       delay, reordering, and restart.
+- [x] The current SQLite outbox record and lease lifecycle have a simulator-only
+      AsyncAPI contract with executable drift tests.
+- [ ] A partner-agreed event contract defines authenticated transport, envelope
+      versioning, topic payloads, correlation/causation, retry/DLQ policy, and
+      acknowledgement semantics.
 - [x] Barrier-driven separate-process tests on one host prove exactly one
       restart-durable SQLite terminal outcome under competing approval/retry,
       expiry, and cancellation.

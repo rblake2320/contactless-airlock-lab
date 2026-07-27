@@ -38,9 +38,15 @@ promote simulator behavior into a production payment claim.
 - [x] OpenAPI 3.1 contract for the current simulator-only realtime-lab issuer
       surface, with executable route, schema, header, and negative drift tests
 - [ ] Production issuer/processor API contract agreed with a partner
-- [ ] AsyncAPI partner event contract
+- [x] AsyncAPI 3.0 simulator-only SQLite outbox record/lifecycle contract with
+      executable source, schema, migration, and runtime drift evidence
+- [ ] Partner-agreed AsyncAPI event envelope, topics, payloads, transport,
+      authentication, compatibility, and delivery policy
 - [ ] Authentication and signed webhook verification
-- [ ] Structured reason codes and privacy-safe observability
+- [x] Closed simulator-domain reason codes on every JSON error and public
+      result, with OpenAPI/runtime enum parity and live rejection drift tests
+- [ ] Partner-agreed production reason-code mapping and privacy-safe
+      observability
 
 ## P2: Partner simulators and operator experience
 
@@ -62,7 +68,11 @@ promote simulator behavior into a production payment claim.
 - [x] Deterministic seeded property-style canonical binding generation and
       malformed-input mutation run in the dependency-free default test suite
 - [ ] Coverage-guided fuzzing of canonical message decoding and schema validation
-- [ ] Key rotation, revocation, recovery, and compromised-device exercises
+- [x] Simulator trusted-device key rotation, revocation, and compromise
+      exercises with atomic invalidation, cap release, duplicate-key rejection,
+      restart durability, rollback, retry, and replay evidence
+- [ ] Production-authorized recovery ceremony, hardware-key replacement,
+      multi-device policy, and partner-integrated compromise response
 - [ ] Push-fatigue and misleading-transaction UX tests
 - [x] Single-host SQLite cap reservations are serialized transactionally across
       contending OS processes, including partial-write rollback, expiry release,

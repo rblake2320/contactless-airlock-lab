@@ -25,6 +25,14 @@ export interface OutboxEvent<T = unknown> {
   deliveredAt?: string;
 }
 
+export const OUTBOX_LIMITS = Object.freeze({
+  eventKey: 256,
+  topic: 128,
+  aggregateId: 256,
+  workerId: 128,
+  payloadBytes: 1_048_576,
+});
+
 export interface MutationTransaction {
   create<T extends object>(
     challengeId: string,
@@ -76,6 +84,26 @@ function rowToEvent<T>(row: Record<string, unknown>): OutboxEvent<T> {
     claimedUntil: (row.claimed_until as string | null) ?? undefined,
     deliveredAt: (row.delivered_at as string | null) ?? undefined,
   };
+}
+
+function assertBoundedOutboxIdentifier(
+  value: string,
+  field: "event key" | "topic" | "aggregate id" | "worker id",
+  maximum: number,
+): void {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    value.length > maximum
+  ) {
+    throw new Error(`invalid outbox ${field}`);
+  }
+}
+
+function assertValidDate(value: Date, field: string): void {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) {
+    throw new Error(`invalid outbox ${field}`);
+  }
 }
 
 export class DurableStore implements MutationTransaction {
@@ -241,19 +269,44 @@ export class DurableStore implements MutationTransaction {
     payload: T,
     now = new Date(),
   ): OutboxEvent<T> {
+    assertBoundedOutboxIdentifier(
+      eventKey,
+      "event key",
+      OUTBOX_LIMITS.eventKey,
+    );
+    assertBoundedOutboxIdentifier(topic, "topic", OUTBOX_LIMITS.topic);
+    assertBoundedOutboxIdentifier(
+      aggregateId,
+      "aggregate id",
+      OUTBOX_LIMITS.aggregateId,
+    );
+    assertValidDate(now, "enqueue time");
+    let payloadJson: string;
+    try {
+      payloadJson = JSON.stringify(payload);
+    } catch {
+      throw new Error("invalid outbox payload");
+    }
+    if (
+      payloadJson === undefined ||
+      Buffer.byteLength(payloadJson) > OUTBOX_LIMITS.payloadBytes
+    ) {
+      throw new Error("invalid outbox payload");
+    }
+    const storedPayload = parse<T>(payloadJson);
     const eventId = randomUUID();
     const timestamp = now.toISOString();
     this.#db.prepare(`
       INSERT INTO outbox_events(
         event_id, event_key, topic, aggregate_id, payload_json, created_at, available_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(eventId, eventKey, topic, aggregateId, JSON.stringify(payload), timestamp, timestamp);
+    `).run(eventId, eventKey, topic, aggregateId, payloadJson, timestamp, timestamp);
     return {
       eventId,
       eventKey,
       topic,
       aggregateId,
-      payload: structuredClone(payload),
+      payload: storedPayload,
       createdAt: timestamp,
       availableAt: timestamp,
       attempts: 0,
@@ -266,7 +319,13 @@ export class DurableStore implements MutationTransaction {
     leaseMs: number,
     now = new Date(),
   ): OutboxEvent[] {
-    if (!workerId || !Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+    assertBoundedOutboxIdentifier(
+      workerId,
+      "worker id",
+      OUTBOX_LIMITS.workerId,
+    );
+    assertValidDate(now, "claim time");
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
       throw new Error("invalid outbox claim");
     }
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 1_000) throw new Error("invalid lease");
@@ -303,11 +362,21 @@ export class DurableStore implements MutationTransaction {
   }
 
   acknowledgeOutbox(eventId: string, workerId: string, now = new Date()): void {
+    assertBoundedOutboxIdentifier(
+      workerId,
+      "worker id",
+      OUTBOX_LIMITS.workerId,
+    );
+    assertValidDate(now, "acknowledgement time");
+    const nowIso = now.toISOString();
     const result = this.#db.prepare(`
       UPDATE outbox_events
-         SET delivered_at = ?, claimed_until = NULL
-       WHERE event_id = ? AND claimed_by = ? AND delivered_at IS NULL
-    `).run(now.toISOString(), eventId, workerId);
+         SET delivered_at = ?, claimed_by = NULL, claimed_until = NULL
+       WHERE event_id = ?
+         AND claimed_by = ?
+         AND claimed_until > ?
+         AND delivered_at IS NULL
+    `).run(nowIso, eventId, workerId, nowIso);
     if (result.changes !== 1) throw new Error("outbox acknowledgement conflict");
   }
 
@@ -315,12 +384,23 @@ export class DurableStore implements MutationTransaction {
     eventId: string,
     workerId: string,
     retryAt: Date,
+    now = new Date(),
   ): void {
+    assertBoundedOutboxIdentifier(
+      workerId,
+      "worker id",
+      OUTBOX_LIMITS.workerId,
+    );
+    assertValidDate(retryAt, "retry time");
+    assertValidDate(now, "release time");
     const result = this.#db.prepare(`
       UPDATE outbox_events
          SET available_at = ?, claimed_by = NULL, claimed_until = NULL
-       WHERE event_id = ? AND claimed_by = ? AND delivered_at IS NULL
-    `).run(retryAt.toISOString(), eventId, workerId);
+       WHERE event_id = ?
+         AND claimed_by = ?
+         AND claimed_until > ?
+         AND delivered_at IS NULL
+    `).run(retryAt.toISOString(), eventId, workerId, now.toISOString());
     if (result.changes !== 1) throw new Error("outbox release conflict");
   }
 

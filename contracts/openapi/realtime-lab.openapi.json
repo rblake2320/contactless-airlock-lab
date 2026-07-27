@@ -424,16 +424,18 @@
       "SimpleError": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["error"],
+        "required": ["code", "error"],
         "properties": {
+          "code": { "$ref": "#/components/schemas/ReasonCode" },
           "error": { "type": "string", "minLength": 1 }
         }
       },
       "StateError": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["error", "state"],
+        "required": ["code", "error", "state"],
         "properties": {
+          "code": { "$ref": "#/components/schemas/ReasonCode" },
           "error": { "type": "string", "minLength": 1 },
           "state": { "$ref": "#/components/schemas/PublicState" }
         }
@@ -627,14 +629,87 @@
       "LastResult": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["ok", "outcome", "action", "message", "at"],
+        "required": ["ok", "outcome", "code", "action", "message", "at"],
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["ok", "outcome", "code"],
+            "properties": {
+              "ok": { "const": true },
+              "outcome": { "const": "accepted" },
+              "code": {
+                "enum": [
+                  "RESET", "PROVISIONING_REQUESTED", "PROVISIONING_APPROVED",
+                  "DEVICE_REVOKED", "TRANSACTION_PENDING",
+                  "TRANSACTION_CONFIRMED", "TRANSACTION_EXPIRED_REVERSED",
+                  "TRANSACTION_SETTLED"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["ok", "outcome", "code"],
+            "properties": {
+              "ok": { "const": false },
+              "outcome": { "const": "warning" },
+              "code": { "const": "CLEARING_AFTER_REVERSAL" }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["ok", "outcome", "code"],
+            "properties": {
+              "ok": { "const": false },
+              "outcome": { "const": "blocked" },
+              "code": {
+                "not": {
+                  "enum": [
+                    "RESET", "PROVISIONING_REQUESTED", "PROVISIONING_APPROVED",
+                    "DEVICE_REVOKED", "TRANSACTION_PENDING",
+                    "TRANSACTION_CONFIRMED", "TRANSACTION_EXPIRED_REVERSED",
+                    "TRANSACTION_SETTLED", "CLEARING_AFTER_REVERSAL"
+                  ]
+                }
+              }
+            }
+          }
+        ],
         "properties": {
           "ok": { "type": "boolean" },
           "outcome": { "type": "string", "enum": ["accepted", "blocked", "warning"] },
+          "code": { "$ref": "#/components/schemas/ReasonCode" },
           "action": { "type": "string" },
           "message": { "type": "string" },
           "at": { "type": "string", "format": "date-time" }
         }
+      },
+      "ReasonCode": {
+        "type": "string",
+        "description": "Closed machine-stable simulator result/rejection vocabulary. Unknown values are contract violations.",
+        "enum": [
+          "RESET", "PROVISIONING_REQUESTED", "PROVISIONING_APPROVED",
+          "DEVICE_REVOKED", "TRANSACTION_PENDING", "TRANSACTION_CONFIRMED",
+          "TRANSACTION_EXPIRED_REVERSED", "TRANSACTION_SETTLED",
+          "CLEARING_AFTER_REVERSAL", "ATTACK_BLOCKED", "SECURITY_INVARIANT_FAILED",
+          "NOT_FOUND", "INVALID_CONTENT_LENGTH", "PAYLOAD_TOO_LARGE",
+          "UNSUPPORTED_MEDIA_TYPE", "BODY_REQUIRED", "MALFORMED_JSON",
+          "BODY_NOT_OBJECT", "CROSS_ORIGIN_REJECTED", "UNTRUSTED_ORIGIN",
+          "HOST_REQUIRED", "INVALID_ORIGIN", "IDEMPOTENCY_KEY_REQUIRED",
+          "IDEMPOTENCY_KEY_INVALID", "IDEMPOTENCY_KEY_TOO_LONG",
+          "IDEMPOTENCY_CONFLICT", "PERSISTENCE_CONFLICT",
+          "PERSISTENCE_UNAVAILABLE", "PROVISIONING_ALREADY_REQUESTED",
+          "PROVISIONING_REQUIRED", "PROVISIONING_NOT_PENDING",
+          "DEVICE_ALREADY_REVOKED", "TOKEN_NOT_SPENDABLE",
+          "TRANSACTION_ALREADY_EXISTS", "TRANSACTION_REQUIRED",
+          "TRANSACTION_NOT_PENDING", "CLEARING_NOT_ALLOWED", "AMOUNT_REQUIRED",
+          "AMOUNT_NON_POSITIVE", "AMOUNT_FORMAT_INVALID", "AMOUNT_TOO_LARGE",
+          "MERCHANT_REQUIRED", "MERCHANT_INVALID", "AUDIT_EMPTY",
+          "UNKNOWN_DEMONSTRATION", "CHALLENGE_BINDING_MISMATCH",
+          "CHALLENGE_EXPIRED", "CHALLENGE_TERMINAL", "DEVICE_KEY_MISMATCH",
+          "DEVICE_NOT_ACTIVE", "INVALID_STATE_TRANSITION", "CAP_EXCEEDED",
+          "DOMAIN_REJECTED", "INTERNAL_ERROR"
+        ]
       },
       "PublicState": {
         "type": "object",
