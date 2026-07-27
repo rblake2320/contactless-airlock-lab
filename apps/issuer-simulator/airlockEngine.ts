@@ -55,6 +55,7 @@ export class AirlockEngine {
   readonly #tokens = new Map<string, PaymentToken>();
   readonly #provisioning = new Map<string, ProvisioningRequest>();
   readonly #transactions = new Map<string, TransactionRecord>();
+  readonly #dailySpend = new Map<string, number>();
 
   enrollTrustedDevice(
     subjectId: string,
@@ -85,6 +86,10 @@ export class AirlockEngine {
     capMinor: number;
     now?: Date;
   }): ProvisioningRequest {
+    if (this.#tokens.has(input.tokenId)) throw new Error("payment token id already exists");
+    if (!Number.isSafeInteger(input.capMinor) || input.capMinor <= 0) {
+      throw new Error("cap must be a positive safe integer");
+    }
     const device = this.#requireActiveDevice(input.trustedDeviceId, input.subjectId);
     const requestId = crypto.randomUUID();
     const token: PaymentToken = {
@@ -125,21 +130,28 @@ export class AirlockEngine {
     requestId: string,
     approval: SignedApproval,
     now = new Date(),
+    activation: "capped" | "full" = "full",
   ): ProvisioningRequest {
     const request = this.#must(this.#provisioning, requestId, "provisioning request");
     const device = this.#requireActiveDevice(request.trustedDeviceId);
     if (approval.keyId !== device.keyId) throw new Error("device key id mismatch");
     this.challenges.consume(approval, device.publicKeyPem, now);
     request.state = transitionProvisioning(request.state, "approved");
-    request.state = transitionProvisioning(request.state, "token_active_full");
+    request.state = transitionProvisioning(
+      request.state,
+      activation === "capped" ? "token_active_capped" : "token_active_full",
+    );
     const token = this.#must(this.#tokens, request.tokenId, "payment token");
-    token.state = "active_full";
-    delete token.perTransactionCapMinor;
-    delete token.dailyCapMinor;
+    token.state = activation === "capped" ? "active_capped" : "active_full";
+    if (activation === "full") {
+      delete token.perTransactionCapMinor;
+      delete token.dailyCapMinor;
+    }
     this.audit.append("provisioning.approved", requestId, {
       requestId,
       tokenId: token.tokenId,
       challengeId: approval.binding.challengeId,
+      activation,
     }, now);
     return structuredClone(request);
   }
@@ -153,17 +165,32 @@ export class AirlockEngine {
     trustedDeviceId: string;
     now?: Date;
   }): TransactionRecord {
+    if (this.#transactions.has(input.transactionId)) {
+      throw new Error("transaction id already exists");
+    }
+    if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+      throw new Error("transaction amount must be a positive safe integer");
+    }
     const token = this.#must(this.#tokens, input.tokenId, "payment token");
     if (token.state === "pending" || token.state === "declined") {
       throw new Error("payment token is not spendable");
     }
+    this.#requireActiveDevice(input.trustedDeviceId, token.subjectId);
     if (
       token.state === "active_capped" &&
       input.amountMinor > (token.perTransactionCapMinor ?? 0)
     ) {
       throw new Error("transaction exceeds new-token cap");
     }
-    this.#requireActiveDevice(input.trustedDeviceId, token.subjectId);
+    if (token.state === "active_capped") {
+      const day = (input.now ?? new Date()).toISOString().slice(0, 10);
+      const spendKey = `${token.tokenId}:${day}`;
+      const nextTotal = (this.#dailySpend.get(spendKey) ?? 0) + input.amountMinor;
+      if (nextTotal > (token.dailyCapMinor ?? 0)) {
+        throw new Error("transaction exceeds new-token daily cap");
+      }
+      this.#dailySpend.set(spendKey, nextTotal);
+    }
     let state: TransactionState = "received";
     state = transitionTransaction(state, "confirmation_pending");
     const challenge = this.challenges.create(
@@ -233,14 +260,19 @@ export class AirlockEngine {
 
   receiveClearing(transactionId: string, now = new Date()): TransactionRecord {
     const transaction = this.#must(this.#transactions, transactionId, "transaction");
+    const reversedBeforeClearing = [
+      "expired",
+      "reversal_requested",
+      "reversed",
+    ].includes(transaction.state);
     transaction.state = transitionTransaction(transaction.state, "clearing_received");
     transaction.state = transitionTransaction(
       transaction.state,
-      transaction.strategy === "provisional_monitoring" ? "exception" : "settled",
+      reversedBeforeClearing ? "exception" : "settled",
     );
     this.audit.append("transaction.clearing_received", transactionId, {
       resultingState: transaction.state,
-      reversedBeforeClearing: transaction.state === "exception",
+      reversedBeforeClearing,
     }, now);
     return structuredClone(transaction);
   }
@@ -268,4 +300,3 @@ export class AirlockEngine {
     return value;
   }
 }
-

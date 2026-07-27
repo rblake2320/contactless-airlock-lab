@@ -26,6 +26,9 @@ export class ChallengeStore {
   readonly #records = new Map<string, ChallengeRecord>();
 
   create(input: CreateChallengeInput, now = new Date()): ChallengeBinding {
+    if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs < 1_000 || input.ttlMs > 300_000) {
+      throw new Error("challenge ttl must be a safe integer between 1000 and 300000 ms");
+    }
     const challengeId = randomBytes(32).toString("base64url");
     const binding: ChallengeBinding = {
       protocolVersion: "airlock.v1",

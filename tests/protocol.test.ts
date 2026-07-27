@@ -89,6 +89,32 @@ test("property ordering does not change canonical signed meaning", () => {
   assert.equal(result.status, "confirmed");
 });
 
+test("unknown signed fields are rejected instead of silently omitted", () => {
+  const { keys, store, binding } = fixture();
+  const extended = { ...binding, unknownSecurityField: "must-not-be-ignored" };
+  assert.throws(
+    () => signApproval(extended, keys.keyId, keys.privateKeyPem),
+    /unknown challenge field/,
+  );
+  assert.equal(store.get(binding.challengeId)?.status, "created");
+});
+
+test("invalid challenge TTL is rejected at runtime", () => {
+  const store = new ChallengeStore();
+  assert.throws(
+    () =>
+      store.create({
+        purpose: "provision-payment-token",
+        subjectId: "subject",
+        accountId: "account",
+        paymentTokenId: "token",
+        trustedDeviceId: "device",
+        ttlMs: 0,
+      }),
+    /challenge ttl/,
+  );
+});
+
 test("transaction state machine exposes reversal-clearing race", () => {
   let state = transitionTransaction("received", "confirmation_pending");
   state = transitionTransaction(state, "expired");

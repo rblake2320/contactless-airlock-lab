@@ -17,7 +17,7 @@ The lab builds and tests:
 - device-bound trusted-device enrollment;
 - signed, single-use provisioning and transaction challenges;
 - exact transaction-field binding and replay prevention;
-- monotonic state machines with atomic challenge consumption;
+- monotonic state machines with single-process one-time challenge consumption;
 - token activation and temporary spending-control policies;
 - simulated authorization, confirmation, reversal, clearing, and settlement;
 - adversarial scenarios and partner-facing integration contracts.
@@ -25,6 +25,10 @@ The lab builds and tests:
 The lab does not claim to modify NFC, EMV kernels, Secure Elements, Apple Pay,
 Google Pay, or production payment rails. A later partner replaces simulator
 adapters with their authorized processor, issuer, TSP, or wallet interfaces.
+
+The current storage adapters are in-memory and intended for protocol
+demonstration. Durable multi-instance atomicity requires the planned
+transactional database adapter and is not claimed by this milestone.
 
 An issuer returning `APPROVED` and later reversing cannot by itself guarantee
 that goods were not released or that clearing cannot arrive. The simulator
@@ -40,4 +44,3 @@ npm run demo
 
 No real PAN, CVV, payment token, biometric template, or production credential
 belongs in this repository.
-

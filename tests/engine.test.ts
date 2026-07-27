@@ -100,3 +100,134 @@ test("clearing after reversal is an explicit exception, not claimed prevention",
   assert.equal(result.state, "exception");
   assert.equal(engine.audit.verify(), true);
 });
+
+test("confirmed provisional transaction settles based on lifecycle, not strategy label", () => {
+  const { engine, keys } = setup();
+  activateToken(engine, keys);
+  const tx = engine.authorize({
+    transactionId: "tx-confirmed-provisional",
+    tokenId: "token-1",
+    merchantId: "merchant",
+    amountMinor: 1_000,
+    strategy: "provisional_monitoring",
+    trustedDeviceId: "device-1",
+  });
+  engine.confirmTransaction(
+    tx.transactionId,
+    signApproval(tx.challenge!, keys.keyId, keys.privateKeyPem),
+  );
+  assert.equal(engine.receiveClearing(tx.transactionId).state, "settled");
+});
+
+test("reversed pre-authorization transaction becomes exception on late clearing", () => {
+  const { engine, keys } = setup();
+  activateToken(engine, keys);
+  engine.authorize({
+    transactionId: "tx-reversed-preauth",
+    tokenId: "token-1",
+    merchantId: "merchant",
+    amountMinor: 1_000,
+    strategy: "pre_authorization_step_up",
+    trustedDeviceId: "device-1",
+  });
+  engine.expireAndReverse("tx-reversed-preauth");
+  assert.equal(engine.receiveClearing("tx-reversed-preauth").state, "exception");
+});
+
+test("duplicate token and transaction identifiers cannot overwrite live state", () => {
+  const { engine, keys } = setup();
+  activateToken(engine, keys);
+  assert.throws(
+    () =>
+      engine.requestProvisioning({
+        subjectId: "subject-1",
+        accountId: "account-1",
+        tokenId: "token-1",
+        trustedDeviceId: "device-1",
+        capMinor: 1_000,
+      }),
+    /token id already exists/,
+  );
+  const transaction = {
+    transactionId: "duplicate-tx",
+    tokenId: "token-1",
+    merchantId: "merchant",
+    amountMinor: 100,
+    strategy: "pre_authorization_step_up" as const,
+    trustedDeviceId: "device-1",
+  };
+  engine.authorize(transaction);
+  assert.throws(() => engine.authorize(transaction), /transaction id already exists/);
+});
+
+test("capped token enforces per-transaction and daily aggregate limits", () => {
+  const { engine, keys } = setup();
+  const request = engine.requestProvisioning({
+    subjectId: "subject-1",
+    accountId: "account-1",
+    tokenId: "capped-token",
+    trustedDeviceId: "device-1",
+    capMinor: 1_000,
+    now: new Date("2026-07-27T12:00:00Z"),
+  });
+  engine.approveProvisioning(
+    request.requestId,
+    signApproval(request.challenge, keys.keyId, keys.privateKeyPem),
+    new Date("2026-07-27T12:00:01Z"),
+    "capped",
+  );
+  assert.equal(engine.getToken("capped-token")?.state, "active_capped");
+  assert.throws(
+    () =>
+      engine.authorize({
+        transactionId: "over-per-tx",
+        tokenId: "capped-token",
+        merchantId: "merchant",
+        amountMinor: 1_001,
+        strategy: "pre_authorization_step_up",
+        trustedDeviceId: "device-1",
+      }),
+    /new-token cap/,
+  );
+  for (const [transactionId, amountMinor] of [["cap-a", 1_000], ["cap-b", 1_000]] as const) {
+    engine.authorize({
+      transactionId,
+      tokenId: "capped-token",
+      merchantId: "merchant",
+      amountMinor,
+      strategy: "pre_authorization_step_up",
+      trustedDeviceId: "device-1",
+      now: new Date("2026-07-27T13:00:00Z"),
+    });
+  }
+  assert.throws(
+    () =>
+      engine.authorize({
+        transactionId: "over-daily",
+        tokenId: "capped-token",
+        merchantId: "merchant",
+        amountMinor: 1,
+        strategy: "pre_authorization_step_up",
+        trustedDeviceId: "device-1",
+        now: new Date("2026-07-27T13:00:00Z"),
+      }),
+    /daily cap/,
+  );
+});
+
+test("invalid monetary inputs are rejected", () => {
+  const { engine, keys } = setup();
+  activateToken(engine, keys);
+  assert.throws(
+    () =>
+      engine.authorize({
+        transactionId: "negative",
+        tokenId: "token-1",
+        merchantId: "merchant",
+        amountMinor: -1,
+        strategy: "pre_authorization_step_up",
+        trustedDeviceId: "device-1",
+      }),
+    /positive safe integer/,
+  );
+});

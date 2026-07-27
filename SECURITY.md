@@ -145,8 +145,9 @@ be separately marked and opt-in.
 ## Demonstration integrity
 
 A demonstration must identify which systems are real and which are simulated.
-It may prove device-key signing, binding validation, atomic consumption, state
-transitions, policy behavior, and adapter contracts. It may not claim to prove
+It may prove device-key signing, binding validation, single-process one-time
+consumption, state transitions, policy behavior, and adapter contracts. It may
+not claim to prove durable multi-instance atomicity or
 control of a wallet, TSP, issuer processor, network, merchant, or clearing
 system that was represented by a simulator.
 
