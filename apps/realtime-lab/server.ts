@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -18,7 +19,41 @@ interface LabState {
   keys: DeviceKeyPair;
   provisioning?: ProvisioningRequest;
   transaction?: TransactionRecord;
+  demonstration?: { name: string; blocked: boolean; message: string };
   lastResult: { ok: boolean; action: string; message: string; at: string };
+}
+
+function parseAmountMinor(value: unknown): number {
+  if (typeof value !== "string") throw new Error("Amount is required in decimal form, for example 25.00.");
+  const input = value.trim();
+  const match = /^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/.exec(input);
+  if (!match) throw new Error("Amount must be a finite decimal with no more than two fractional digits.");
+  const fraction = (match[2] ?? "").padEnd(2, "0");
+  const minor = BigInt(match[1]) * 100n + BigInt(fraction || "0");
+  if (minor <= 0n) throw new Error("Amount must be greater than zero.");
+  if (minor > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Amount exceeds the safe supported limit.");
+  return Number(minor);
+}
+
+function parseMerchantId(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Merchant identifier is required.");
+  const merchantId = value.trim();
+  if (!merchantId) throw new Error("Merchant identifier is required.");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(merchantId)) {
+    throw new Error("Merchant identifier must be 1–64 letters, numbers, dots, colons, underscores, or hyphens.");
+  }
+  return merchantId;
+}
+
+function verifyAuditCopy(events: ReturnType<AirlockEngine["audit"]["all"]>): boolean {
+  let previousHash = "GENESIS";
+  for (const event of events) {
+    const { hash, ...body } = event;
+    const digest = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+    if (body.previousHash !== previousHash || digest !== hash) return false;
+    previousHash = hash;
+  }
+  return true;
 }
 
 function freshState(): LabState {
@@ -49,7 +84,30 @@ function publicSnapshot(state: LabState) {
     token,
     provisioning: state.provisioning,
     transaction,
+    confirmation: transaction?.challenge ? {
+      amountMinor: transaction.challenge.amountMinor,
+      currency: transaction.challenge.currency,
+      merchantId: transaction.challenge.merchantId,
+      paymentTokenId: transaction.challenge.paymentTokenId,
+      trustedDeviceId: transaction.challenge.trustedDeviceId,
+      challengeId: transaction.challenge.challengeId,
+      expiresAt: transaction.challenge.expiresAt,
+    } : undefined,
+    actions: {
+      requestProvisioning: !state.provisioning && state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
+      attackProvisioning: state.provisioning?.state === "trusted_device_challenge",
+      approveProvisioning: state.provisioning?.state === "trusted_device_challenge" &&
+        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
+      revokeDevice: state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
+      requestTransaction: Boolean(token && ["active_capped", "active_full"].includes(token.state) &&
+        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active" && !transaction),
+      confirmTransaction: transaction?.state === "confirmation_pending",
+      expireTransaction: transaction?.state === "confirmation_pending",
+      receiveClearing: Boolean(transaction && ["confirmed", "reversed"].includes(transaction.state)),
+      negativeBinding: transaction?.state === "confirmation_pending",
+    },
     audit: { valid: state.engine.audit.verify(), events: state.engine.audit.all() },
+    demonstration: state.demonstration,
     lastResult: state.lastResult,
   };
 }
@@ -118,6 +176,7 @@ export function createLabServer() {
         return json(res, 200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === "/api/provision/request") {
+        if (state.provisioning) throw new Error("Provisioning was already requested. Reset the lab to start a new request.");
         state.provisioning = state.engine.requestProvisioning({
           subjectId: SYNTHETIC.subjectId,
           accountId: SYNTHETIC.accountId,
@@ -142,23 +201,30 @@ export function createLabServer() {
       }
       if (req.method === "POST" && url.pathname === "/api/provision/approve") {
         if (!state.provisioning) throw new Error("request provisioning first");
+        if (state.provisioning.state !== "trusted_device_challenge") {
+          throw new Error("Provisioning is no longer waiting for approval.");
+        }
         const approval = signApproval(state.provisioning.challenge, state.keys.keyId, state.keys.privateKeyPem);
         state.provisioning = state.engine.approveProvisioning(state.provisioning.requestId, approval);
         succeed("provision.approve", "Exact challenge binding signed with the enrolled P-256 key.");
         return json(res, 200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === "/api/device/revoke") {
+        if (state.engine.getDevice(SYNTHETIC.deviceId)?.status !== "active") {
+          throw new Error("Trusted device is already revoked.");
+        }
         state.engine.revokeTrustedDevice(SYNTHETIC.deviceId);
         succeed("device.revoke", "Trusted device revoked; outstanding approvals now fail closed.");
         return json(res, 200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === "/api/transaction/request") {
         const body = await readJson(req);
+        if (state.transaction) throw new Error("A transaction already exists. Reset the lab to start another.");
         state.transaction = state.engine.authorize({
           transactionId: `synthetic-tx-${Date.now()}`,
           tokenId: SYNTHETIC.tokenId,
-          merchantId: String(body.merchantId ?? "synthetic-merchant-001"),
-          amountMinor: Number(body.amountMinor ?? 2_500),
+          merchantId: parseMerchantId(body.merchantId),
+          amountMinor: parseAmountMinor(body.amount),
           strategy: "pre_authorization_step_up",
           trustedDeviceId: SYNTHETIC.deviceId,
         });
@@ -167,6 +233,9 @@ export function createLabServer() {
       }
       if (req.method === "POST" && url.pathname === "/api/transaction/confirm") {
         if (!state.transaction?.challenge) throw new Error("request a transaction first");
+        if (state.transaction.state !== "confirmation_pending") {
+          throw new Error("Only a transaction awaiting confirmation can be confirmed.");
+        }
         const approval = signApproval(state.transaction.challenge, state.keys.keyId, state.keys.privateKeyPem);
         state.transaction = state.engine.confirmTransaction(state.transaction.transactionId, approval);
         succeed("transaction.confirm", "Amount, merchant, token, device, nonce, and expiry binding verified.");
@@ -174,15 +243,92 @@ export function createLabServer() {
       }
       if (req.method === "POST" && url.pathname === "/api/transaction/expire") {
         if (!state.transaction) throw new Error("request a transaction first");
+        if (state.transaction.state !== "confirmation_pending") {
+          throw new Error("Only a transaction awaiting confirmation can time out.");
+        }
         state.transaction = state.engine.expireAndReverse(state.transaction.transactionId);
         succeed("transaction.expire", "Confirmation timed out; reversal requested and recorded.");
         return json(res, 200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === "/api/transaction/clear") {
         if (!state.transaction) throw new Error("request a transaction first");
+        if (!["confirmed", "reversed"].includes(state.transaction.state)) {
+          throw new Error("Clearing can only follow confirmation or reversal in this demonstration.");
+        }
         state.transaction = state.engine.receiveClearing(state.transaction.transactionId);
         succeed("transaction.clear", "Synthetic clearing received; final state follows the state machine.");
         return json(res, 200, publicSnapshot(state));
+      }
+      if (req.method === "POST" && url.pathname === "/api/demonstrate/audit-tamper") {
+        const tampered = state.engine.audit.all();
+        if (!tampered.length) throw new Error("No audit event exists to tamper with.");
+        tampered[0].payload = { ...tampered[0].payload, tampered: true };
+        const detected = !verifyAuditCopy(tampered);
+        state.demonstration = {
+          name: "audit-tamper",
+          blocked: detected,
+          message: detected ? "Modified audit payload invalidated the hash chain." : "Tampering was not detected.",
+        };
+        state.lastResult = {
+          ok: detected,
+          action: "demonstrate.audit-tamper",
+          message: state.demonstration.message,
+          at: new Date().toISOString(),
+        };
+        broadcast();
+        return json(res, detected ? 200 : 500, publicSnapshot(state));
+      }
+      if (req.method === "POST" && url.pathname.startsWith("/api/demonstrate/")) {
+        if (!state.transaction?.challenge || state.transaction.state !== "confirmation_pending") {
+          throw new Error("Request a pending transaction before running a binding attack.");
+        }
+        const name = url.pathname.slice("/api/demonstrate/".length);
+        const original = state.transaction.challenge;
+        try {
+          if (
+            name === "altered-amount" ||
+            name === "altered-merchant" ||
+            name === "modified-nonce" ||
+            name === "wrong-device"
+          ) {
+            const binding = structuredClone(original);
+            if (name === "altered-amount") binding.amountMinor = (binding.amountMinor ?? 0) + 1;
+            if (name === "altered-merchant") binding.merchantId = `${binding.merchantId}-altered`;
+            if (name === "modified-nonce") binding.challengeId = crypto.randomUUID();
+            if (name === "wrong-device") binding.trustedDeviceId = "substituted-device";
+            const approval = signApproval(binding, state.keys.keyId, state.keys.privateKeyPem);
+            state.engine.confirmTransaction(state.transaction.transactionId, approval);
+          } else if (name === "wrong-key") {
+            const wrongKeys = generateDeviceKeyPair("wrong-demo-key");
+            const approval = signApproval(original, wrongKeys.keyId, wrongKeys.privateKeyPem);
+            state.engine.confirmTransaction(state.transaction.transactionId, approval);
+          } else if (name === "expired-challenge") {
+            const approval = signApproval(original, state.keys.keyId, state.keys.privateKeyPem);
+            state.engine.confirmTransaction(state.transaction.transactionId, approval, new Date(original.expiresAt));
+          } else if (name === "reused-signature") {
+            const approval = signApproval(original, state.keys.keyId, state.keys.privateKeyPem);
+            state.transaction = state.engine.confirmTransaction(state.transaction.transactionId, approval);
+            state.engine.confirmTransaction(state.transaction.transactionId, approval);
+          } else {
+            throw new Error("Unknown security demonstration.");
+          }
+          throw new Error("Unexpected: the attack was accepted.");
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "attack rejected";
+          if (message.startsWith("Unexpected:")) throw error;
+          if (name === "expired-challenge" && state.transaction.state === "confirmation_pending") {
+            state.transaction = state.engine.expireAndReverse(state.transaction.transactionId);
+          }
+          state.demonstration = { name, blocked: true, message };
+          state.lastResult = {
+            ok: false,
+            action: `demonstrate.${name}`,
+            message: `Attack blocked: ${message}`,
+            at: new Date().toISOString(),
+          };
+          broadcast();
+          return json(res, 200, publicSnapshot(state));
+        }
       }
 
       if (req.method === "GET") {

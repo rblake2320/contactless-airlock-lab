@@ -10,6 +10,16 @@ function render(state) {
   $("transaction-state").textContent = state.transaction?.state ?? "absent";
   $("challenge-id").textContent = short(state.transaction?.challenge?.challengeId);
   $("strategy").textContent = state.transaction?.strategy?.replaceAll("_", " ") ?? "—";
+  $("bound-amount").textContent = state.confirmation?.amountMinor
+    ? `${(state.confirmation.amountMinor / 100).toFixed(2)} ${state.confirmation.currency}`
+    : "—";
+  $("bound-merchant").textContent = state.confirmation?.merchantId ?? "—";
+  $("bound-token").textContent = state.confirmation?.paymentTokenId ?? "—";
+  $("bound-device").textContent = state.confirmation?.trustedDeviceId ?? "—";
+  $("bound-nonce").textContent = short(state.confirmation?.challengeId, 20);
+  $("bound-expiry").textContent = state.confirmation?.expiresAt
+    ? new Date(state.confirmation.expiresAt).toLocaleTimeString()
+    : "—";
   $("audit-valid").textContent = state.audit.valid ? "valid" : "INVALID";
   $("audit-valid").dataset.tone = state.audit.valid ? "good" : "bad";
   $("result-title").textContent = state.lastResult.ok ? "Accepted" : "Blocked";
@@ -30,6 +40,9 @@ function render(state) {
     item.append(top, hash);
     return item;
   }));
+  document.querySelectorAll("[data-capability]").forEach((button) => {
+    button.disabled = !state.actions[button.dataset.capability];
+  });
 }
 
 async function action(path, body) {
@@ -51,7 +64,7 @@ document.querySelectorAll("[data-action]").forEach((button) => {
   button.addEventListener("click", () => action(button.dataset.action));
 });
 $("request-transaction").addEventListener("click", () => action("/api/transaction/request", {
-  amountMinor: Math.round(Number($("amount").value) * 100),
+  amount: $("amount").value,
   merchantId: $("merchant").value,
 }));
 
