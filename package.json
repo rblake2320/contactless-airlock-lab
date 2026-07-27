@@ -6,12 +6,18 @@
   "description": "Reference implementation and partner integration lab for trusted-device payment provisioning and transaction confirmation.",
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
     "demo": "node --experimental-strip-types tools/demo.ts",
     "lab": "node --experimental-strip-types apps/realtime-lab/server.ts",
     "scenarios": "node --experimental-strip-types tools/scenarios.ts",
-    "check": "npm test && npm run scenarios"
+    "check": "npm run typecheck && npm test && npm run scenarios",
+    "security:audit": "npm audit --audit-level=high"
   },
   "engines": {
     "node": ">=22.6"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
   }
 }

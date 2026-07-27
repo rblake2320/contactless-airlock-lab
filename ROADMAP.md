@@ -47,7 +47,11 @@ promote simulator behavior into a production payment claim.
 - [ ] Key rotation, revocation, recovery, and compromised-device exercises
 - [ ] Push-fatigue and misleading-transaction UX tests
 - [ ] Caps enforced transactionally across concurrent authorizations
-- [ ] Dependency, SAST, secret, and container scans
+- [x] Strict TypeScript static checking in the default quality gate
+- [x] Secret-free CI runs tests, scenarios, demo, dependency audit,
+      and a narrow committed-credential precheck
+- [ ] Dedicated SAST, full-history secret scanning, SBOM/provenance, and
+      container scanning
 - [ ] Independent application-security review
 
 ## P4: Partner pilot
@@ -67,3 +71,6 @@ Before P4 evidence, describe the project as a reference implementation and
 partner integration lab. Do not claim production fraud prevention, NFC relay
 resistance, wallet integration, issuer certification, or guaranteed settlement
 prevention.
+
+The detailed exit criteria and external dependencies are maintained in
+[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md).

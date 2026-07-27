@@ -4,19 +4,35 @@ on:
   push:
     branches: ["main"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: airlock-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-      - run: npm install --ignore-scripts
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run security:audit
       - run: npm run check
       - run: npm run demo
+      - name: Reject obvious committed secrets and private keys
+        shell: bash
+        run: |
+          if git grep -nE \
+            '(BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9]{20,})' \
+            -- ':!SECURITY.md'; then
+            echo "::error::Potential credential material found in tracked files."
+            exit 1
+          fi

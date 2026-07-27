@@ -61,7 +61,7 @@ export class AirlockEngine {
   enrollTrustedDevice(
     subjectId: string,
     keys: Pick<DeviceKeyPair, "keyId" | "publicKeyPem">,
-    deviceId = crypto.randomUUID(),
+    deviceId: string = crypto.randomUUID(),
   ): TrustedDevice {
     if (this.#devices.has(deviceId)) throw new Error("trusted device id already exists");
     const device: TrustedDevice = {
