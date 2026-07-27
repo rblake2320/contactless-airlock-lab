@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Contactless Airlock — Live Protocol Lab</title>
+    <meta name="description" content="A local synthetic trusted-device payment security protocol simulator.">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header>
+      <div><p class="eyebrow">Issuer-overlay reference implementation</p><h1>Contactless Airlock <span>Live Lab</span></h1></div>
+      <div class="connection"><i></i><span id="connection">Connecting</span></div>
+    </header>
+    <aside class="notice"><strong>SIMULATOR — SYNTHETIC DATA ONLY</strong><span>No card number, bank, wallet, processor, terminal, or payment rail is connected.</span></aside>
+
+    <main>
+      <section class="flow">
+        <article class="lane">
+          <div class="lane-head"><span>01</span><h2>New wallet</h2></div>
+          <p>Requests a synthetic payment token. It cannot spend while approval is pending.</p>
+          <button data-action="/api/provision/request">Request provisioning</button>
+          <button class="danger" data-action="/api/provision/attack">Attempt spend before approval</button>
+          <dl><div><dt>Request</dt><dd id="request-state">not requested</dd></div><div><dt>Token</dt><dd id="token-state">absent</dd></div></dl>
+        </article>
+        <article class="lane">
+          <div class="lane-head"><span>02</span><h2>Trusted device</h2></div>
+          <p>Signs the exact canonical challenge with an enrolled P-256 key.</p>
+          <button data-action="/api/provision/approve">Approve provisioning</button>
+          <button class="danger" data-action="/api/device/revoke">Revoke device</button>
+          <dl><div><dt>Device</dt><dd id="device-state">—</dd></div><div><dt>Key</dt><dd id="device-key">—</dd></div></dl>
+        </article>
+        <article class="lane">
+          <div class="lane-head"><span>03</span><h2>Issuer airlock</h2></div>
+          <p>Binds the amount and merchant to a one-time confirmation challenge.</p>
+          <div class="fields">
+            <label>Amount<input id="amount" inputmode="decimal" value="25.00" aria-label="Transaction amount"></label>
+            <label>Merchant<input id="merchant" value="synthetic-merchant-001" aria-label="Merchant identifier"></label>
+          </div>
+          <button id="request-transaction">Request transaction</button>
+          <button data-action="/api/transaction/confirm">Confirm exact binding</button>
+          <dl><div><dt>Transaction</dt><dd id="transaction-state">absent</dd></div><div><dt>Challenge</dt><dd id="challenge-id">—</dd></div></dl>
+        </article>
+        <article class="lane">
+          <div class="lane-head"><span>04</span><h2>Processor boundary</h2></div>
+          <p>Models timeout, reversal, and later clearing without claiming settlement prevention.</p>
+          <button class="danger" data-action="/api/transaction/expire">Timeout + reverse</button>
+          <button data-action="/api/transaction/clear">Receive clearing</button>
+          <dl><div><dt>Strategy</dt><dd id="strategy">—</dd></div><div><dt>Audit chain</dt><dd id="audit-valid">—</dd></div></dl>
+        </article>
+      </section>
+      <section class="evidence">
+        <div class="result">
+          <div><p class="eyebrow">Last protocol decision</p><h2 id="result-title">Waiting for state</h2></div>
+          <p id="result-message"></p>
+          <button class="quiet" data-action="/api/reset">Reset lab</button>
+        </div>
+        <div class="audit">
+          <div class="audit-head"><div><p class="eyebrow">Tamper-evident evidence</p><h2>Audit stream</h2></div><span id="event-count">0 events</span></div>
+          <ol id="events"></ol>
+        </div>
+      </section>
+    </main>
+    <footer>
+      <span>What this proves: local protocol behavior and cryptographic/state-machine invariants.</span>
+      <span>What it does not prove: issuer integration, EMV certification, production fraud reduction, or settlement prevention.</span>
+    </footer>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

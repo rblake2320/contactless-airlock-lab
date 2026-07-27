@@ -42,5 +42,17 @@ npm test
 npm run demo
 ```
 
+For an interactive local browser demonstration:
+
+```powershell
+npm run lab
+```
+
+Then open `http://127.0.0.1:8788`. The live lab drives the same
+`AirlockEngine`, P-256 signatures, challenge store, state transitions,
+revocation checks, and hash-chained audit log as the automated tests. It uses
+synthetic identifiers and does not connect to a card, wallet, bank, processor,
+terminal, or payment network.
+
 No real PAN, CVV, payment token, biometric template, or production credential
 belongs in this repository.
