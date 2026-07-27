@@ -1,0 +1,191 @@
+{
+  "asyncapi": "3.0.0",
+  "id": "urn:contactless-airlock-lab:simulator-outbox",
+  "info": {
+    "title": "Contactless Airlock Lab Simulator Outbox",
+    "version": "0.1.0",
+    "description": "Simulator-only contract for the local SQLite outbox record and claim lifecycle. This is not an agreed issuer, processor, wallet/TSP, network, or merchant event contract."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "localSimulatorStore": {
+      "host": "local-process",
+      "protocol": "sqlite-outbox",
+      "description": "Conceptual AsyncAPI representation of an in-process SQLite API. No broker or partner endpoint exists.",
+      "x-simulator-only": true
+    }
+  },
+  "channels": {
+    "simulatorOutbox": {
+      "address": "outbox_events",
+      "description": "The single local SQLite outbox table. Topic is record metadata used by a future dispatcher, not a routed SQLite channel or an implemented broker destination.",
+      "messages": {
+        "simulatorOutboxRecord": {
+          "$ref": "#/components/messages/simulatorOutboxRecord"
+        }
+      },
+      "servers": [
+        {
+          "$ref": "#/servers/localSimulatorStore"
+        }
+      ],
+      "x-simulator-only": true
+    }
+  },
+  "operations": {
+    "claimSimulatorOutbox": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/simulatorOutbox"
+      },
+      "summary": "Claim a bounded batch for a leased, at-least-once simulator delivery attempt",
+      "messages": [
+        {
+          "$ref": "#/channels/simulatorOutbox/messages/simulatorOutboxRecord"
+        }
+      ],
+      "x-runtime-method": "DurableStore.claimOutbox",
+      "x-simulator-only": true
+    }
+  },
+  "components": {
+    "messages": {
+      "simulatorOutboxRecord": {
+        "name": "airlock.simulator.outbox-record.v1",
+        "title": "Simulator outbox record version 1",
+        "summary": "Internal leased delivery record, not a partner wire envelope",
+        "contentType": "application/json",
+        "payload": {
+          "$ref": "#/components/schemas/SimulatorOutboxRecordV1"
+        },
+        "x-contract-version": 1,
+        "x-versioning": {
+          "location": "AsyncAPI message name and schema reference",
+          "runtimeFieldPresent": false,
+          "negotiationImplemented": false
+        },
+        "x-idempotency": {
+          "producerKey": "eventKey",
+          "producerGuarantee": "SQLite UNIQUE(event_key) rejects duplicate enqueue in the database lifetime.",
+          "deliveryIdentity": "eventId",
+          "consumerRequirement": "Consumers must deduplicate eventKey or eventId because delivery is at least once."
+        },
+        "x-correlation": {
+          "currentField": "aggregateId",
+          "meaning": "Opaque aggregate grouping only.",
+          "explicitCorrelationIdPresent": false,
+          "causationIdPresent": false
+        },
+        "x-retry": {
+          "delivery": "at-least-once",
+          "eligibleWhen": "deliveredAt is absent, availableAt is due, and claimedUntil is absent or expired",
+          "attemptCounter": "attempts increments when a lease is successfully claimed",
+          "acknowledgement": "acknowledgeOutbox succeeds only while the caller owns an unexpired lease, marks deliveredAt, and clears ownership",
+          "explicitRelease": "releaseOutbox succeeds only while the caller owns an unexpired lease, clears ownership, and moves availableAt to the supplied retry time",
+          "crashRecovery": "an unacknowledged event becomes eligible after claimedUntil",
+          "automaticBackoffImplemented": false,
+          "maximumAttemptsImplemented": false,
+          "deadLetterQueueImplemented": false,
+          "orderingGuarantee": "claim scan orders by createdAt then eventId; no cross-worker delivery-order guarantee"
+        },
+        "x-simulator-only": true
+      }
+    },
+    "schemas": {
+      "SimulatorOutboxRecordV1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "eventId",
+          "eventKey",
+          "topic",
+          "aggregateId",
+          "payload",
+          "createdAt",
+          "availableAt",
+          "attempts"
+        ],
+        "properties": {
+          "eventId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Generated delivery-record identity.",
+            "x-sqlite-column": "event_id"
+          },
+          "eventKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Producer-supplied database-lifetime uniqueness key.",
+            "x-sqlite-column": "event_key"
+          },
+          "topic": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Opaque caller-supplied simulator topic; no registry is enforced.",
+            "x-sqlite-column": "topic"
+          },
+          "aggregateId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Opaque aggregate grouping; not a complete correlation/causation envelope.",
+            "x-sqlite-column": "aggregate_id"
+          },
+          "payload": {
+            "description": "Caller-supplied JSON value. The current store enforces no topic-specific payload schema.",
+            "x-maxSerializedBytes": 1048576,
+            "x-sqlite-column": "payload_json"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "x-sqlite-column": "created_at"
+          },
+          "availableAt": {
+            "type": "string",
+            "format": "date-time",
+            "x-sqlite-column": "available_at"
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Number of successful lease claims, not business-processing attempts.",
+            "x-sqlite-column": "attempts"
+          },
+          "claimedBy": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Current lease owner when claimed.",
+            "x-sqlite-column": "claimed_by"
+          },
+          "claimedUntil": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Lease expiry; another worker may claim after this instant.",
+            "x-sqlite-column": "claimed_until"
+          },
+          "deliveredAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Local acknowledgement time; not proof a production partner committed an effect.",
+            "x-sqlite-column": "delivered_at"
+          }
+        },
+        "x-source-type": "packages/storage/durableStore.ts#OutboxEvent",
+        "x-simulator-only": true
+      }
+    }
+  },
+  "x-production-contract-status": {
+    "agreed": false,
+    "partnerReviewed": false,
+    "authenticationDefined": false,
+    "transportDefined": false,
+    "topicPayloadSchemasDefined": false,
+    "compatibilityPolicyDefined": false
+  }
+}

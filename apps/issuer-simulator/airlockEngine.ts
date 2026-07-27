@@ -1,5 +1,5 @@
 import { AuditLog, type AuditLogSnapshot } from "../../packages/audit/auditLog.ts";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import {
   APPROVAL_ALGORITHM,
   validatePublicKeyProfile,
@@ -21,6 +21,18 @@ import {
   transitionProvisioning,
   transitionTransaction,
 } from "../../packages/state-machine/transitions.ts";
+
+const DEVICE_KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function publicKeyFingerprint(
+  publicKeyPem: string,
+  algorithm: ApprovalAlgorithm,
+): string {
+  const key = validatePublicKeyProfile(publicKeyPem, algorithm);
+  return createHash("sha256")
+    .update(key.export({ type: "spki", format: "der" }))
+    .digest("base64url");
+}
 
 export interface TrustedDevice {
   deviceId: string;
@@ -114,6 +126,11 @@ export class AirlockEngine {
         throw new Error("invalid trusted device snapshot");
       }
       validatePublicKeyProfile(device.publicKeyPem, device.algorithm);
+      if (engine.#devices.has(device.deviceId)) {
+        throw new Error("duplicate trusted device in snapshot");
+      }
+      engine.#assertKeyIdAvailable(device.keyId);
+      engine.#assertPublicKeyAvailable(device.publicKeyPem, device.algorithm);
       engine.#restoreUnique(engine.#devices, device.deviceId, device, "trusted device");
     }
     for (const token of snapshot.tokens) {
@@ -270,7 +287,9 @@ export class AirlockEngine {
     deviceId: string = crypto.randomUUID(),
   ): TrustedDevice {
     if (this.#devices.has(deviceId)) throw new Error("trusted device id already exists");
+    this.#assertKeyIdAvailable(keys.keyId);
     validatePublicKeyProfile(keys.publicKeyPem, keys.algorithm);
+    this.#assertPublicKeyAvailable(keys.publicKeyPem, keys.algorithm);
     const device: TrustedDevice = {
       deviceId,
       subjectId,
@@ -297,11 +316,93 @@ export class AirlockEngine {
   revokeTrustedDevice(deviceId: string, now = new Date()): TrustedDevice {
     const device = this.#must(this.#devices, deviceId, "trusted device");
     if (device.status === "revoked") throw new Error("trusted device already revoked");
+    const invalidatedChallengeIds = this.#invalidateOutstandingChallenges(
+      deviceId,
+      now,
+    );
     device.status = "revoked";
     this.audit.append("trusted_device.revoked", deviceId, {
       deviceId,
       subjectId: device.subjectId,
       keyId: device.keyId,
+      invalidatedChallengeIds,
+    }, now);
+    return structuredClone(device);
+  }
+
+  /**
+   * Marks a device credential as compromised and permanently removes it from
+   * the active set. Compromise deliberately uses the same terminal `revoked`
+   * status: there is no reactivation or recovery downgrade path.
+   */
+  markTrustedDeviceCompromised(
+    deviceId: string,
+    now = new Date(),
+  ): TrustedDevice {
+    const device = this.#must(this.#devices, deviceId, "trusted device");
+    if (device.status !== "active") {
+      throw new Error("compromised device is not active");
+    }
+    const invalidatedChallengeIds = this.#invalidateOutstandingChallenges(
+      deviceId,
+      now,
+    );
+    device.status = "revoked";
+    this.audit.append("trusted_device.compromised", deviceId, {
+      deviceId,
+      subjectId: device.subjectId,
+      keyId: device.keyId,
+      invalidatedChallengeIds,
+      recoveryDowngradeAvailable: false,
+    }, now);
+    return structuredClone(device);
+  }
+
+  /**
+   * Applies a replacement public key after the caller's administrative
+   * authorization boundary has succeeded. The simulator intentionally does
+   * not model that production IAM/HSM ceremony. Every outstanding challenge
+   * for the old key is cancelled before the replacement becomes active.
+   */
+  rotateTrustedDeviceKey(
+    deviceId: string,
+    keys: Pick<DeviceKeyPair, "keyId" | "algorithm" | "publicKeyPem">,
+    now = new Date(),
+  ): TrustedDevice {
+    const device = this.#must(this.#devices, deviceId, "trusted device");
+    if (device.status !== "active") {
+      throw new Error("only an active trusted device key can be rotated");
+    }
+    if (keys.keyId === device.keyId) {
+      throw new Error("rotated key id must differ from the current key id");
+    }
+    this.#assertKeyIdAvailable(keys.keyId, deviceId);
+    validatePublicKeyProfile(keys.publicKeyPem, keys.algorithm);
+    if (
+      publicKeyFingerprint(keys.publicKeyPem, keys.algorithm) ===
+        publicKeyFingerprint(device.publicKeyPem, device.algorithm)
+    ) {
+      throw new Error("rotated public key must differ from the current key");
+    }
+    this.#assertPublicKeyAvailable(
+      keys.publicKeyPem,
+      keys.algorithm,
+      deviceId,
+    );
+    const oldKeyId = device.keyId;
+    const invalidatedChallengeIds = this.#invalidateOutstandingChallenges(
+      deviceId,
+      now,
+    );
+    device.keyId = keys.keyId;
+    device.algorithm = keys.algorithm;
+    device.publicKeyPem = keys.publicKeyPem;
+    this.audit.append("trusted_device.key_rotated", deviceId, {
+      deviceId,
+      subjectId: device.subjectId,
+      oldKeyId,
+      newKeyId: device.keyId,
+      invalidatedChallengeIds,
     }, now);
     return structuredClone(device);
   }
@@ -560,6 +661,89 @@ export class AirlockEngine {
     delete transaction.capReservation;
   }
 
+  #invalidateOutstandingChallenges(deviceId: string, now: Date): string[] {
+    const provisioning = [...this.#provisioning.values()].filter((request) =>
+      request.trustedDeviceId === deviceId &&
+      request.state === "trusted_device_challenge"
+    ).map((request) => ({
+      request,
+      challenge: this.challenges.get(request.challenge.challengeId)!,
+    }));
+    const transactions = [...this.#transactions.values()].filter((transaction) =>
+      transaction.challenge?.trustedDeviceId === deviceId &&
+      transaction.state === "confirmation_pending"
+    ).map((transaction) => ({
+      transaction,
+      challenge: this.challenges.get(transaction.challenge!.challengeId)!,
+    }));
+
+    // Phase one validates the complete plan. Without this pass, cancelling an
+    // older challenge before discovering a future-issued challenge would leave
+    // a partially-mutated aggregate when the operation throws.
+    for (const { challenge } of [...provisioning, ...transactions]) {
+      if (
+        challenge.status === "created" &&
+        now.getTime() < Date.parse(challenge.binding.issuedAt)
+      ) {
+        throw new Error("challenge cannot be cancelled before issuance");
+      }
+    }
+
+    // Phase two cannot fail for timestamp/order reasons and reconciles pending
+    // aggregates even when a previous approval attempt already expired the
+    // challenge before the device lifecycle action arrived.
+    const invalidatedChallengeIds: string[] = [];
+    for (const { request, challenge } of provisioning) {
+      if (challenge.status === "created") {
+        this.challenges.cancel(request.challenge.challengeId, now);
+      } else if (!["cancelled", "expired"].includes(challenge.status)) {
+        continue;
+      }
+      request.state = transitionProvisioning(request.state, "declined");
+      const token = this.#must(this.#tokens, request.tokenId, "payment token");
+      if (token.state === "pending") token.state = "declined";
+      invalidatedChallengeIds.push(request.challenge.challengeId);
+    }
+    for (const { transaction, challenge } of transactions) {
+      if (challenge.status === "created") {
+        this.challenges.cancel(transaction.challenge!.challengeId, now);
+      } else if (!["cancelled", "expired"].includes(challenge.status)) {
+        continue;
+      }
+      transaction.state = transitionTransaction(transaction.state, "declined");
+      this.#releaseCapReservation(transaction);
+      invalidatedChallengeIds.push(transaction.challenge!.challengeId);
+    }
+    return invalidatedChallengeIds;
+  }
+
+  #assertKeyIdAvailable(keyId: string, exceptDeviceId?: string): void {
+    if (!DEVICE_KEY_ID_PATTERN.test(keyId)) {
+      throw new Error("invalid trusted device key id");
+    }
+    for (const device of this.#devices.values()) {
+      if (device.deviceId !== exceptDeviceId && device.keyId === keyId) {
+        throw new Error("trusted device key id already exists");
+      }
+    }
+  }
+
+  #assertPublicKeyAvailable(
+    publicKeyPem: string,
+    algorithm: ApprovalAlgorithm,
+    exceptDeviceId?: string,
+  ): void {
+    const fingerprint = publicKeyFingerprint(publicKeyPem, algorithm);
+    for (const device of this.#devices.values()) {
+      if (
+        device.deviceId !== exceptDeviceId &&
+        publicKeyFingerprint(device.publicKeyPem, device.algorithm) === fingerprint
+      ) {
+        throw new Error("trusted device public key already exists");
+      }
+    }
+  }
+
   #assertStoredChallengeMatches(binding: ChallengeBinding): void {
     const stored = this.challenges.get(binding.challengeId);
     const storedCanonical = stored ? canonicalizeBinding(stored.binding) : undefined;
@@ -588,7 +772,7 @@ export class AirlockEngine {
       approved: ["confirmed"],
       token_active_capped: ["confirmed"],
       token_active_full: ["confirmed"],
-      declined: ["cancelled"],
+      declined: ["cancelled", "expired"],
       expired: ["expired"],
     };
     if (!expected[request.state].includes(status)) {
@@ -608,7 +792,7 @@ export class AirlockEngine {
       received: ["created"],
       confirmation_pending: ["created"],
       confirmed: ["confirmed"],
-      declined: ["cancelled"],
+      declined: ["cancelled", "expired"],
       expired: ["cancelled", "expired"],
       reversal_requested: ["confirmed", "cancelled", "expired"],
       reversed: ["confirmed", "cancelled", "expired"],

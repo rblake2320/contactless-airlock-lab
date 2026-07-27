@@ -141,6 +141,9 @@ export class ChallengeStore {
     const record = this.#records.get(challengeId);
     if (!record) throw new Error("unknown challenge");
     if (record.status !== "created") throw new Error("challenge already terminal");
+    if (now.getTime() < Date.parse(record.binding.issuedAt)) {
+      throw new Error("challenge cannot be cancelled before issuance");
+    }
     record.status = "cancelled";
     record.consumedAt = now.toISOString();
     return structuredClone(record);

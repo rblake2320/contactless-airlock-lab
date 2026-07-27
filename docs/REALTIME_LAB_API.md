@@ -29,6 +29,18 @@ safe-integer minor-unit range. Its merchant ID is 1–64 characters in the
 documented ASCII set. Other mutations require no body; if a body is supplied,
 the current server accepts any JSON object and ignores its properties.
 
+## Stable reason codes
+
+Every JSON error contains `code` and the existing human-readable `error`.
+Every public `lastResult` contains `code` alongside its human-readable
+`message`. Codes are a closed, machine-stable vocabulary in the OpenAPI
+`ReasonCode` schema; clients must branch on the code rather than parsing
+English text. An undeclared code is a contract failure.
+
+These are simulator-domain codes, not ISO 8583, network, issuer-processor, or
+wallet/TSP response codes. A partner adapter must explicitly map them to its
+authorized contract rather than forwarding them as payment-rail decisions.
+
 ## Events
 
 `GET /api/events` is an SSE stream. It immediately sends a `state` event whose

@@ -36,6 +36,31 @@ const SYNTHETIC = Object.freeze({
   tokenId: "synthetic-token-001",
 });
 
+export const REASON_CODES = [
+  "RESET", "PROVISIONING_REQUESTED", "PROVISIONING_APPROVED",
+  "DEVICE_REVOKED", "TRANSACTION_PENDING", "TRANSACTION_CONFIRMED",
+  "TRANSACTION_EXPIRED_REVERSED", "TRANSACTION_SETTLED",
+  "CLEARING_AFTER_REVERSAL", "ATTACK_BLOCKED", "SECURITY_INVARIANT_FAILED",
+  "NOT_FOUND", "INVALID_CONTENT_LENGTH", "PAYLOAD_TOO_LARGE",
+  "UNSUPPORTED_MEDIA_TYPE", "BODY_REQUIRED", "MALFORMED_JSON",
+  "BODY_NOT_OBJECT", "CROSS_ORIGIN_REJECTED", "UNTRUSTED_ORIGIN",
+  "HOST_REQUIRED", "INVALID_ORIGIN", "IDEMPOTENCY_KEY_REQUIRED",
+  "IDEMPOTENCY_KEY_INVALID", "IDEMPOTENCY_KEY_TOO_LONG",
+  "IDEMPOTENCY_CONFLICT", "PERSISTENCE_CONFLICT",
+  "PERSISTENCE_UNAVAILABLE", "PROVISIONING_ALREADY_REQUESTED",
+  "PROVISIONING_REQUIRED", "PROVISIONING_NOT_PENDING",
+  "DEVICE_ALREADY_REVOKED", "TOKEN_NOT_SPENDABLE",
+  "TRANSACTION_ALREADY_EXISTS", "TRANSACTION_REQUIRED",
+  "TRANSACTION_NOT_PENDING", "CLEARING_NOT_ALLOWED", "AMOUNT_REQUIRED",
+  "AMOUNT_NON_POSITIVE", "AMOUNT_FORMAT_INVALID", "AMOUNT_TOO_LARGE",
+  "MERCHANT_REQUIRED", "MERCHANT_INVALID", "AUDIT_EMPTY",
+  "UNKNOWN_DEMONSTRATION", "CHALLENGE_BINDING_MISMATCH",
+  "CHALLENGE_EXPIRED", "CHALLENGE_TERMINAL", "DEVICE_KEY_MISMATCH",
+  "DEVICE_NOT_ACTIVE", "INVALID_STATE_TRANSITION", "CAP_EXCEEDED",
+  "DOMAIN_REJECTED", "INTERNAL_ERROR",
+] as const;
+export type ReasonCode = typeof REASON_CODES[number];
+
 export const REALTIME_LAB_API_ROUTES = Object.freeze({
   health: "/api/health",
   state: "/api/state",
@@ -67,6 +92,7 @@ interface LabState {
   lastResult: {
     ok: boolean;
     outcome: "accepted" | "blocked" | "warning";
+    code: ReasonCode;
     action: string;
     message: string;
     at: string;
@@ -74,7 +100,7 @@ interface LabState {
 }
 
 interface PersistedLabSnapshot {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   simulatorOnly: true;
   keyMaterialWarning: typeof SIMULATOR_KEY_WARNING;
   engine: AirlockEngineSnapshot;
@@ -82,7 +108,7 @@ interface PersistedLabSnapshot {
   provisioningRequestId?: string;
   transactionId?: string;
   demonstration?: LabState["demonstration"];
-  lastResult: LabState["lastResult"];
+  lastResult: LabState["lastResult"] | Omit<LabState["lastResult"], "code">;
 }
 
 interface PersistedHttpResponse {
@@ -104,14 +130,27 @@ export interface CreateLabServerOptions {
   >;
   /** Test-only fault point; production callers must leave this unset. */
   faultInjector?: (action: string) => void;
+  /** Test-only verifier substitution for exercising the fail-closed invariant. */
+  auditCopyVerifier?: typeof verifyAuditCopy;
 }
 
 class HttpError extends Error {
   readonly status: number;
+  readonly code: ReasonCode;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, code?: ReasonCode) {
     super(message);
     this.status = status;
+    this.code = code ?? reasonCodeFor(message, status);
+  }
+}
+
+class DomainError extends Error {
+  readonly code: ReasonCode;
+
+  constructor(code: ReasonCode, message: string) {
+    super(message);
+    this.code = code;
   }
 }
 
@@ -128,16 +167,16 @@ function enforceMutationSource(req: IncomingMessage): void {
     fetchSite !== "same-origin" &&
     fetchSite !== "none"
   ) {
-    throw new HttpError(403, "Cross-origin mutation request rejected.");
+    throw new HttpError(403, "Cross-origin mutation request rejected.", "CROSS_ORIGIN_REJECTED");
   }
 
   const origin = req.headers.origin;
   if (origin === undefined) return; // Preserve non-browser CLI/partner harness operation.
   if (typeof origin !== "string" || origin === "null") {
-    throw new HttpError(403, "Untrusted mutation origin rejected.");
+    throw new HttpError(403, "Untrusted mutation origin rejected.", "UNTRUSTED_ORIGIN");
   }
   const host = req.headers.host;
-  if (!host) throw new HttpError(400, "Host header is required.");
+  if (!host) throw new HttpError(400, "Host header is required.", "HOST_REQUIRED");
   let normalizedOrigin: string;
   try {
     const parsed = new URL(origin);
@@ -146,10 +185,10 @@ function enforceMutationSource(req: IncomingMessage): void {
     }
     normalizedOrigin = parsed.origin;
   } catch {
-    throw new HttpError(403, "Invalid mutation origin rejected.");
+    throw new HttpError(403, "Invalid mutation origin rejected.", "INVALID_ORIGIN");
   }
   if (normalizedOrigin !== `http://${host}`) {
-    throw new HttpError(403, "Cross-origin mutation request rejected.");
+    throw new HttpError(403, "Cross-origin mutation request rejected.", "CROSS_ORIGIN_REJECTED");
   }
 }
 
@@ -158,10 +197,10 @@ async function readBoundedBody(req: IncomingMessage): Promise<Buffer> {
   if (declaredLength !== undefined) {
     const length = Number(declaredLength);
     if (!Number.isSafeInteger(length) || length < 0) {
-      throw new HttpError(400, "Invalid Content-Length.");
+      throw new HttpError(400, "Invalid Content-Length.", "INVALID_CONTENT_LENGTH");
     }
     if (length > MAX_REQUEST_BODY_BYTES) {
-      throw new HttpError(413, `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes.`);
+      throw new HttpError(413, `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes.`, "PAYLOAD_TOO_LARGE");
     }
   }
   const chunks: Buffer[] = [];
@@ -170,7 +209,7 @@ async function readBoundedBody(req: IncomingMessage): Promise<Buffer> {
     const buffer = Buffer.from(chunk);
     total += buffer.length;
     if (total > MAX_REQUEST_BODY_BYTES) {
-      throw new HttpError(413, `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes.`);
+      throw new HttpError(413, `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes.`, "PAYLOAD_TOO_LARGE");
     }
     chunks.push(buffer);
   }
@@ -180,40 +219,40 @@ async function readBoundedBody(req: IncomingMessage): Promise<Buffer> {
 function parseJsonBody(req: IncomingMessage, body: Buffer): Record<string, unknown> {
   const contentType = req.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
-    throw new HttpError(415, "Content-Type must be application/json.");
+    throw new HttpError(415, "Content-Type must be application/json.", "UNSUPPORTED_MEDIA_TYPE");
   }
-  if (!body.length) throw new HttpError(400, "JSON request body is required.");
+  if (!body.length) throw new HttpError(400, "JSON request body is required.", "BODY_REQUIRED");
   let value: unknown;
   try {
     value = JSON.parse(body.toString("utf8"));
   } catch {
-    throw new HttpError(400, "Malformed JSON request body.");
+    throw new HttpError(400, "Malformed JSON request body.", "MALFORMED_JSON");
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new HttpError(400, "JSON body must be an object.");
+    throw new HttpError(400, "JSON body must be an object.", "BODY_NOT_OBJECT");
   }
   return value as Record<string, unknown>;
 }
 
 function parseAmountMinor(value: unknown): number {
-  if (typeof value !== "string") throw new Error("Amount is required in decimal form, for example 25.00.");
+  if (typeof value !== "string") throw new DomainError("AMOUNT_REQUIRED", "Amount is required in decimal form, for example 25.00.");
   const input = value.trim();
-  if (/^-\d+(?:\.\d+)?$/.test(input)) throw new Error("Amount must be greater than zero.");
+  if (/^-\d+(?:\.\d+)?$/.test(input)) throw new DomainError("AMOUNT_NON_POSITIVE", "Amount must be greater than zero.");
   const match = /^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/.exec(input);
-  if (!match) throw new Error("Amount must be a finite decimal with no more than two fractional digits.");
+  if (!match) throw new DomainError("AMOUNT_FORMAT_INVALID", "Amount must be a finite decimal with no more than two fractional digits.");
   const fraction = (match[2] ?? "").padEnd(2, "0");
   const minor = BigInt(match[1]) * 100n + BigInt(fraction || "0");
-  if (minor <= 0n) throw new Error("Amount must be greater than zero.");
-  if (minor > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Amount exceeds the safe supported limit.");
+  if (minor <= 0n) throw new DomainError("AMOUNT_NON_POSITIVE", "Amount must be greater than zero.");
+  if (minor > BigInt(Number.MAX_SAFE_INTEGER)) throw new DomainError("AMOUNT_TOO_LARGE", "Amount exceeds the safe supported limit.");
   return Number(minor);
 }
 
 function parseMerchantId(value: unknown): string {
-  if (typeof value !== "string") throw new Error("Merchant identifier is required.");
+  if (typeof value !== "string") throw new DomainError("MERCHANT_REQUIRED", "Merchant identifier is required.");
   const merchantId = value.trim();
-  if (!merchantId) throw new Error("Merchant identifier is required.");
+  if (!merchantId) throw new DomainError("MERCHANT_REQUIRED", "Merchant identifier is required.");
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(merchantId)) {
-    throw new Error("Merchant identifier must be 1–64 letters, numbers, dots, colons, underscores, or hyphens.");
+    throw new DomainError("MERCHANT_INVALID", "Merchant identifier must be 1–64 letters, numbers, dots, colons, underscores, or hyphens.");
   }
   return merchantId;
 }
@@ -239,6 +278,7 @@ function freshState(): LabState {
     lastResult: {
       ok: true,
       outcome: "accepted",
+      code: "RESET",
       action: "reset",
       message: "Synthetic trusted device enrolled. No payment network was contacted.",
       at: new Date().toISOString(),
@@ -246,10 +286,73 @@ function freshState(): LabState {
   };
 }
 
+function reasonCodeFor(message: string, status: number): ReasonCode {
+  if (message === "not found") return "NOT_FOUND";
+  if (message === "Invalid Content-Length.") return "INVALID_CONTENT_LENGTH";
+  if (message.startsWith("Request body exceeds")) return "PAYLOAD_TOO_LARGE";
+  if (message.includes("Content-Type") || message.includes("content-type")) return "UNSUPPORTED_MEDIA_TYPE";
+  if (message === "JSON request body is required.") return "BODY_REQUIRED";
+  if (message === "Malformed JSON request body.") return "MALFORMED_JSON";
+  if (message === "JSON body must be an object.") return "BODY_NOT_OBJECT";
+  if (message === "Cross-origin mutation request rejected.") return "CROSS_ORIGIN_REJECTED";
+  if (message === "Untrusted mutation origin rejected.") return "UNTRUSTED_ORIGIN";
+  if (message === "Host header is required.") return "HOST_REQUIRED";
+  if (message === "Invalid mutation origin rejected.") return "INVALID_ORIGIN";
+  if (message.includes("Idempotency-Key is required")) return "IDEMPOTENCY_KEY_REQUIRED";
+  if (message.includes("Idempotency-Key must not exceed")) return "IDEMPOTENCY_KEY_TOO_LONG";
+  if (message.includes("Idempotency-Key was already used")) return "IDEMPOTENCY_CONFLICT";
+  if (message.startsWith("Idempotency-Key must")) return "IDEMPOTENCY_KEY_INVALID";
+  if (message.includes("Persistent simulator state changed")) return "PERSISTENCE_CONFLICT";
+  if (message.includes("durably save") || message.includes("persistence version")) return "PERSISTENCE_UNAVAILABLE";
+  if (message.includes("Provisioning was already requested")) return "PROVISIONING_ALREADY_REQUESTED";
+  if (message === "request provisioning first") return "PROVISIONING_REQUIRED";
+  if (message.includes("Provisioning is no longer waiting")) return "PROVISIONING_NOT_PENDING";
+  if (message.includes("already revoked")) return "DEVICE_ALREADY_REVOKED";
+  if (message.includes("payment token is not spendable")) return "TOKEN_NOT_SPENDABLE";
+  if (message.includes("transaction already exists") || message.includes("transaction id already exists")) return "TRANSACTION_ALREADY_EXISTS";
+  if (message === "request a transaction first") return "TRANSACTION_REQUIRED";
+  if (message.includes("awaiting confirmation") || message.includes("can be confirmed")) return "TRANSACTION_NOT_PENDING";
+  if (message.includes("Clearing can only follow")) return "CLEARING_NOT_ALLOWED";
+  if (message.startsWith("Amount is required")) return "AMOUNT_REQUIRED";
+  if (message === "Amount must be greater than zero.") return "AMOUNT_NON_POSITIVE";
+  if (message.includes("finite decimal")) return "AMOUNT_FORMAT_INVALID";
+  if (message.includes("safe supported limit")) return "AMOUNT_TOO_LARGE";
+  if (message === "Merchant identifier is required.") return "MERCHANT_REQUIRED";
+  if (message.startsWith("Merchant identifier must")) return "MERCHANT_INVALID";
+  if (message.includes("No audit event exists")) return "AUDIT_EMPTY";
+  if (message === "Unknown security demonstration.") return "UNKNOWN_DEMONSTRATION";
+  if (message.includes("binding mismatch")) return "CHALLENGE_BINDING_MISMATCH";
+  if (message.includes("challenge expired")) return "CHALLENGE_EXPIRED";
+  if (message.includes("challenge already terminal")) return "CHALLENGE_TERMINAL";
+  if (message.includes("key id mismatch")) return "DEVICE_KEY_MISMATCH";
+  if (message.includes("trusted device is revoked")) return "DEVICE_NOT_ACTIVE";
+  if (message.includes("invalid transaction transition") || message.includes("invalid provisioning transition")) return "INVALID_STATE_TRANSITION";
+  if (message.includes("cap")) return "CAP_EXCEEDED";
+  return status >= 500 ? "INTERNAL_ERROR" : "DOMAIN_REJECTED";
+}
+
+function legacyResultCode(result: Omit<LabState["lastResult"], "code">): ReasonCode {
+  const byAction: Readonly<Record<string, ReasonCode>> = {
+    reset: "RESET",
+    "provision.request": "PROVISIONING_REQUESTED",
+    "provision.approve": "PROVISIONING_APPROVED",
+    "device.revoke": "DEVICE_REVOKED",
+    "transaction.request": "TRANSACTION_PENDING",
+    "transaction.confirm": "TRANSACTION_CONFIRMED",
+    "transaction.expire": "TRANSACTION_EXPIRED_REVERSED",
+    "transaction.clear": "TRANSACTION_SETTLED",
+    "transaction.clear.exception": "CLEARING_AFTER_REVERSAL",
+    "demonstrate.audit-tamper": "ATTACK_BLOCKED",
+  };
+  if (result.action.startsWith("demonstrate.")) return "ATTACK_BLOCKED";
+  return byAction[result.action] ??
+    reasonCodeFor(result.message, result.ok ? 200 : 409);
+}
+
 function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     const encoded = JSON.stringify(value);
-    if (encoded === undefined) throw new HttpError(400, "JSON value is not canonicalizable.");
+    if (encoded === undefined) throw new HttpError(400, "JSON value is not canonicalizable.", "BODY_NOT_OBJECT");
     return encoded;
   }
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -263,16 +366,16 @@ function canonicalMutationBody(req: IncomingMessage, body: Buffer): string {
   if (!body.length) return "{}";
   const contentType = req.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
   if (contentType !== "application/json") {
-    throw new HttpError(415, "Mutation bodies must use Content-Type application/json.");
+    throw new HttpError(415, "Mutation bodies must use Content-Type application/json.", "UNSUPPORTED_MEDIA_TYPE");
   }
   let value: unknown;
   try {
     value = JSON.parse(body.toString("utf8"));
   } catch {
-    throw new HttpError(400, "Malformed JSON request body.");
+    throw new HttpError(400, "Malformed JSON request body.", "MALFORMED_JSON");
   }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new HttpError(400, "JSON body must be an object.");
+    throw new HttpError(400, "JSON body must be an object.", "BODY_NOT_OBJECT");
   }
   return stableJson(value);
 }
@@ -289,23 +392,26 @@ function requestIdempotency(
       throw new HttpError(
         428,
         "Idempotency-Key is required for persistent mutating requests.",
+        "IDEMPOTENCY_KEY_REQUIRED",
       );
     }
     return undefined;
   }
   if (typeof header !== "string") {
-    throw new HttpError(400, "Idempotency-Key must be a single header value.");
+    throw new HttpError(400, "Idempotency-Key must be a single header value.", "IDEMPOTENCY_KEY_INVALID");
   }
   if (header.length > MAX_IDEMPOTENCY_KEY_LENGTH) {
     throw new HttpError(
       431,
       `Idempotency-Key must not exceed ${MAX_IDEMPOTENCY_KEY_LENGTH} characters.`,
+      "IDEMPOTENCY_KEY_TOO_LONG",
     );
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(header)) {
     throw new HttpError(
       400,
       "Idempotency-Key must use only letters, numbers, dots, underscores, colons, or hyphens.",
+      "IDEMPOTENCY_KEY_INVALID",
     );
   }
   const requestHash = createHash("sha256")
@@ -316,18 +422,29 @@ function requestIdempotency(
 
 class PersistenceError extends Error {
   readonly status: number;
+  readonly code: ReasonCode;
   readonly authoritativeState?: LabState;
 
-  constructor(status: number, message: string, authoritativeState?: LabState) {
+  constructor(
+    status: number,
+    message: string,
+    authoritativeState?: LabState,
+    code: ReasonCode = status === 503
+      ? "PERSISTENCE_UNAVAILABLE"
+      : message.startsWith("Idempotency-Key")
+      ? "IDEMPOTENCY_CONFLICT"
+      : "PERSISTENCE_CONFLICT",
+  ) {
     super(message);
     this.status = status;
+    this.code = code;
     if (authoritativeState) this.authoritativeState = authoritativeState;
   }
 }
 
 function snapshotLabState(state: LabState): PersistedLabSnapshot {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     simulatorOnly: true,
     keyMaterialWarning: SIMULATOR_KEY_WARNING,
     engine: state.engine.snapshot(),
@@ -346,7 +463,7 @@ function snapshotLabState(state: LabState): PersistedLabSnapshot {
 function restoreLabState(snapshot: PersistedLabSnapshot): LabState {
   if (
     !snapshot ||
-    snapshot.schemaVersion !== 1 ||
+    ![1, 2].includes(snapshot.schemaVersion) ||
     snapshot.simulatorOnly !== true ||
     snapshot.keyMaterialWarning !== SIMULATOR_KEY_WARNING ||
     !snapshot.keys ||
@@ -356,6 +473,12 @@ function restoreLabState(snapshot: PersistedLabSnapshot): LabState {
     !snapshot.lastResult ||
     typeof snapshot.lastResult.message !== "string"
   ) {
+    throw new Error("invalid realtime-lab simulator snapshot");
+  }
+  const restoredCode = "code" in snapshot.lastResult
+    ? snapshot.lastResult.code
+    : legacyResultCode(snapshot.lastResult);
+  if (!REASON_CODES.includes(restoredCode)) {
     throw new Error("invalid realtime-lab simulator snapshot");
   }
   let derivedPublic: string;
@@ -400,7 +523,10 @@ function restoreLabState(snapshot: PersistedLabSnapshot): LabState {
     ...(snapshot.demonstration
       ? { demonstration: structuredClone(snapshot.demonstration) }
       : {}),
-    lastResult: structuredClone(snapshot.lastResult),
+    lastResult: {
+      ...structuredClone(snapshot.lastResult),
+      code: restoredCode,
+    },
   };
 }
 
@@ -475,6 +601,16 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
     }
     state = stored ? restoreLabState(stored.value) : freshState();
     persistedVersion = stored?.version;
+    if (persistentStore && stored?.value.schemaVersion === 1) {
+      const migrated = persistentStore.compareAndSwap(
+        LAB_SNAPSHOT_ID,
+        stored.version,
+        LAB_SNAPSHOT_STATUS,
+        LAB_SNAPSHOT_STATUS,
+        snapshotLabState(state),
+      );
+      persistedVersion = migrated.version;
+    }
     if (persistentStore && !stored) {
       const created = persistentStore.create(
         LAB_SNAPSHOT_ID,
@@ -593,20 +729,22 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
     const payload = `event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`;
     for (const listener of listeners) listener.write(payload);
   };
-  const succeed = (action: string, message: string) => {
+  const succeed = (action: string, message: string, code: ReasonCode) => {
     state.lastResult = {
       ok: true,
       outcome: "accepted",
+      code,
       action,
       message,
       at: new Date().toISOString(),
     };
     options.faultInjector?.(action);
   };
-  const warn = (action: string, message: string) => {
+  const warn = (action: string, message: string, code: ReasonCode) => {
     state.lastResult = {
       ok: false,
       outcome: "warning",
+      code,
       action,
       message,
       at: new Date().toISOString(),
@@ -695,7 +833,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           trustedDeviceId: SYNTHETIC.deviceId,
           capMinor: 5_000,
         });
-        succeed("provision.request", "Provisioning challenge issued to the trusted device.");
+        succeed("provision.request", "Provisioning challenge issued to the trusted device.", "PROVISIONING_REQUESTED");
         return finalize(200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.provisionAttack) {
@@ -717,7 +855,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         }
         const approval = signApproval(state.provisioning.challenge, state.keys.keyId, state.keys.privateKeyPem);
         state.provisioning = state.engine.approveProvisioning(state.provisioning.requestId, approval);
-        succeed("provision.approve", "Exact challenge binding signed with the enrolled P-256 key.");
+        succeed("provision.approve", "Exact challenge binding signed with the enrolled P-256 key.", "PROVISIONING_APPROVED");
         return finalize(200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.deviceRevoke) {
@@ -725,7 +863,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           throw new Error("Trusted device is already revoked.");
         }
         state.engine.revokeTrustedDevice(SYNTHETIC.deviceId);
-        succeed("device.revoke", "Trusted device revoked; outstanding approvals now fail closed.");
+        succeed("device.revoke", "Trusted device revoked; outstanding approvals now fail closed.", "DEVICE_REVOKED");
         return finalize(200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionRequest) {
@@ -739,7 +877,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           strategy: "pre_authorization_step_up",
           trustedDeviceId: SYNTHETIC.deviceId,
         });
-        succeed("transaction.request", "Transaction is pending exact trusted-device confirmation.");
+        succeed("transaction.request", "Transaction is pending exact trusted-device confirmation.", "TRANSACTION_PENDING");
         return finalize(200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionConfirm) {
@@ -749,7 +887,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         }
         const approval = signApproval(state.transaction.challenge, state.keys.keyId, state.keys.privateKeyPem);
         state.transaction = state.engine.confirmTransaction(state.transaction.transactionId, approval);
-        succeed("transaction.confirm", "Amount, merchant, token, device, nonce, and expiry binding verified.");
+        succeed("transaction.confirm", "Amount, merchant, token, device, nonce, and expiry binding verified.", "TRANSACTION_CONFIRMED");
         return finalize(200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionExpire) {
@@ -758,7 +896,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           throw new Error("Only a transaction awaiting confirmation can time out.");
         }
         state.transaction = state.engine.expireAndReverse(state.transaction.transactionId);
-        succeed("transaction.expire", "Confirmation timed out; reversal requested and recorded.");
+        succeed("transaction.expire", "Confirmation timed out; reversal requested and recorded.", "TRANSACTION_EXPIRED_REVERSED");
         return finalize(200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionClear) {
@@ -771,9 +909,10 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           warn(
             "transaction.clear.exception",
             "Exception detected: clearing arrived after reversal. Partner reconciliation is required; settlement prevention is not claimed.",
+            "CLEARING_AFTER_REVERSAL",
           );
         } else {
-          succeed("transaction.clear", "Synthetic clearing received; transaction settled.");
+          succeed("transaction.clear", "Synthetic clearing received; transaction settled.", "TRANSACTION_SETTLED");
         }
         return finalize(200, publicSnapshot(state));
       }
@@ -781,7 +920,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         const tampered = state.engine.audit.all();
         if (!tampered.length) throw new Error("No audit event exists to tamper with.");
         tampered[0].payload = { ...tampered[0].payload, tampered: true };
-        const detected = !verifyAuditCopy(tampered);
+        const detected = !(options.auditCopyVerifier ?? verifyAuditCopy)(tampered);
         state.demonstration = {
           name: "audit-tamper",
           blocked: detected,
@@ -796,6 +935,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         state.lastResult = {
           ok: false,
           outcome: "blocked",
+          code: detected ? "ATTACK_BLOCKED" : "SECURITY_INVARIANT_FAILED",
           action: "demonstrate.audit-tamper",
           message: `Attack blocked: ${state.demonstration.message} The authoritative audit remains valid.`,
           at: new Date().toISOString(),
@@ -852,6 +992,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           state.lastResult = {
             ok: false,
             outcome: "blocked",
+            code: "ATTACK_BLOCKED",
             action: `demonstrate.${name}`,
             message: `Attack blocked: ${message}`,
             at: new Date().toISOString(),
@@ -863,7 +1004,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
       if (req.method === "GET") {
         const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
         if (!["index.html", "app.js", "styles.css"].includes(relative)) {
-          return json(res, 404, { error: "not found" });
+          return json(res, 404, { code: "NOT_FOUND", error: "not found" });
         }
         const body = await readFile(join(PUBLIC_DIR, relative));
         const types: Record<string, string> = {
@@ -878,31 +1019,46 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         });
         return res.end(body);
       }
-      return json(res, 404, { error: "not found" });
+      return json(res, 404, { code: "NOT_FOUND", error: "not found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
       if (error instanceof HttpError) {
-        return json(res, error.status, { error: message });
+        return json(res, error.status, {
+          code: error.code,
+          error: message,
+        });
       }
       if (error instanceof PersistenceError) {
         state = error.authoritativeState ??
           (rollbackSnapshot ? restoreLabState(rollbackSnapshot) : state);
         return json(res, error.status, {
+          code: error.code,
           error: error.message,
           state: publicSnapshot(state),
         });
       }
       if (rollbackSnapshot) state = restoreLabState(rollbackSnapshot);
+      const knownCode = error instanceof DomainError
+        ? error.code
+        : reasonCodeFor(message, 409);
+      const isKnownDomainFailure = knownCode !== "DOMAIN_REJECTED";
+      const publicCode: ReasonCode = isKnownDomainFailure ? knownCode : "INTERNAL_ERROR";
+      const publicMessage = isKnownDomainFailure
+        ? message
+        : "Internal simulator error.";
+      const publicStatus = isKnownDomainFailure ? 409 : 500;
       state.lastResult = {
         ok: false,
         outcome: "blocked",
+        code: publicCode,
         action: "blocked",
-        message,
+        message: publicMessage,
         at: new Date().toISOString(),
       };
       try {
-        return finalize(409, {
-          error: message,
+        return finalize(publicStatus, {
+          code: publicCode,
+          error: publicMessage,
           state: publicSnapshot(state),
         });
       } catch (persistError) {
@@ -910,6 +1066,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           state = persistError.authoritativeState ??
             (rollbackSnapshot ? restoreLabState(rollbackSnapshot) : state);
           return json(res, persistError.status, {
+            code: persistError.code,
             error: persistError.message,
             state: publicSnapshot(state),
           });
