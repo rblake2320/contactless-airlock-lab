@@ -231,3 +231,79 @@ test("invalid monetary inputs are rejected", () => {
     /positive safe integer/,
   );
 });
+
+test("cap multiplication cannot exceed safe-integer range", () => {
+  const { engine } = setup();
+  assert.throws(
+    () =>
+      engine.requestProvisioning({
+        subjectId: "subject-1",
+        accountId: "account-1",
+        tokenId: "unsafe-cap",
+        trustedDeviceId: "device-1",
+        capMinor: Number.MAX_SAFE_INTEGER,
+      }),
+    /cap must be a positive safe integer/,
+  );
+});
+
+test("expired capped authorization releases its daily reservation", () => {
+  const { engine, keys } = setup();
+  const request = engine.requestProvisioning({
+    subjectId: "subject-1",
+    accountId: "account-1",
+    tokenId: "reservation-token",
+    trustedDeviceId: "device-1",
+    capMinor: 1_000,
+  });
+  engine.approveProvisioning(
+    request.requestId,
+    signApproval(request.challenge, keys.keyId, keys.privateKeyPem),
+    new Date(),
+    "capped",
+  );
+  engine.authorize({
+    transactionId: "reservation-a",
+    tokenId: "reservation-token",
+    merchantId: "merchant",
+    amountMinor: 1_000,
+    strategy: "provisional_monitoring",
+    trustedDeviceId: "device-1",
+  });
+  engine.expireAndReverse("reservation-a");
+  assert.doesNotThrow(() =>
+    engine.authorize({
+      transactionId: "reservation-b",
+      tokenId: "reservation-token",
+      merchantId: "merchant",
+      amountMinor: 1_000,
+      strategy: "pre_authorization_step_up",
+      trustedDeviceId: "device-1",
+    }),
+  );
+});
+
+test("device enrollment collision and unknown runtime enums fail closed", () => {
+  const { engine, keys } = setup();
+  assert.throws(
+    () => engine.enrollTrustedDevice("subject-1", keys, "device-1"),
+    /device id already exists/,
+  );
+  const request = engine.requestProvisioning({
+    subjectId: "subject-1",
+    accountId: "account-1",
+    tokenId: "enum-token",
+    trustedDeviceId: "device-1",
+    capMinor: 1_000,
+  });
+  assert.throws(
+    () =>
+      engine.approveProvisioning(
+        request.requestId,
+        signApproval(request.challenge, keys.keyId, keys.privateKeyPem),
+        new Date(),
+        "unexpected" as "full",
+      ),
+    /invalid activation mode/,
+  );
+});

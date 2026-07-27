@@ -46,6 +46,7 @@ export interface TransactionRecord {
   state: TransactionState;
   strategy: "pre_authorization_step_up" | "provisional_monitoring";
   challenge?: ChallengeBinding;
+  capReservation?: { spendKey: string; amountMinor: number };
 }
 
 export class AirlockEngine {
@@ -62,6 +63,7 @@ export class AirlockEngine {
     keys: Pick<DeviceKeyPair, "keyId" | "publicKeyPem">,
     deviceId = crypto.randomUUID(),
   ): TrustedDevice {
+    if (this.#devices.has(deviceId)) throw new Error("trusted device id already exists");
     const device: TrustedDevice = {
       deviceId,
       subjectId,
@@ -87,7 +89,11 @@ export class AirlockEngine {
     now?: Date;
   }): ProvisioningRequest {
     if (this.#tokens.has(input.tokenId)) throw new Error("payment token id already exists");
-    if (!Number.isSafeInteger(input.capMinor) || input.capMinor <= 0) {
+    if (
+      !Number.isSafeInteger(input.capMinor) ||
+      input.capMinor <= 0 ||
+      input.capMinor > Math.floor(Number.MAX_SAFE_INTEGER / 2)
+    ) {
       throw new Error("cap must be a positive safe integer");
     }
     const device = this.#requireActiveDevice(input.trustedDeviceId, input.subjectId);
@@ -132,6 +138,9 @@ export class AirlockEngine {
     now = new Date(),
     activation: "capped" | "full" = "full",
   ): ProvisioningRequest {
+    if (activation !== "capped" && activation !== "full") {
+      throw new Error("invalid activation mode");
+    }
     const request = this.#must(this.#provisioning, requestId, "provisioning request");
     const device = this.#requireActiveDevice(request.trustedDeviceId);
     if (approval.keyId !== device.keyId) throw new Error("device key id mismatch");
@@ -171,6 +180,12 @@ export class AirlockEngine {
     if (!Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
       throw new Error("transaction amount must be a positive safe integer");
     }
+    if (
+      input.strategy !== "pre_authorization_step_up" &&
+      input.strategy !== "provisional_monitoring"
+    ) {
+      throw new Error("invalid transaction strategy");
+    }
     const token = this.#must(this.#tokens, input.tokenId, "payment token");
     if (token.state === "pending" || token.state === "declined") {
       throw new Error("payment token is not spendable");
@@ -182,6 +197,7 @@ export class AirlockEngine {
     ) {
       throw new Error("transaction exceeds new-token cap");
     }
+    let capReservation: TransactionRecord["capReservation"];
     if (token.state === "active_capped") {
       const day = (input.now ?? new Date()).toISOString().slice(0, 10);
       const spendKey = `${token.tokenId}:${day}`;
@@ -190,6 +206,7 @@ export class AirlockEngine {
         throw new Error("transaction exceeds new-token daily cap");
       }
       this.#dailySpend.set(spendKey, nextTotal);
+      capReservation = { spendKey, amountMinor: input.amountMinor };
     }
     let state: TransactionState = "received";
     state = transitionTransaction(state, "confirmation_pending");
@@ -217,6 +234,7 @@ export class AirlockEngine {
       strategy: input.strategy,
       state,
       challenge,
+      capReservation,
     };
     this.#transactions.set(input.transactionId, transaction);
     this.audit.append("transaction.confirmation_pending", input.transactionId, {
@@ -251,6 +269,7 @@ export class AirlockEngine {
     transaction.state = transitionTransaction(transaction.state, "expired");
     transaction.state = transitionTransaction(transaction.state, "reversal_requested");
     transaction.state = transitionTransaction(transaction.state, "reversed");
+    this.#releaseCapReservation(transaction);
     this.audit.append("transaction.reversed_after_timeout", transactionId, {
       strategy: transaction.strategy,
       settlementPrevented: false,
@@ -292,6 +311,15 @@ export class AirlockEngine {
     if (device.status !== "active") throw new Error("trusted device is revoked");
     if (subjectId && device.subjectId !== subjectId) throw new Error("trusted device subject mismatch");
     return device;
+  }
+
+  #releaseCapReservation(transaction: TransactionRecord): void {
+    if (!transaction.capReservation) return;
+    const { spendKey, amountMinor } = transaction.capReservation;
+    const remaining = Math.max(0, (this.#dailySpend.get(spendKey) ?? 0) - amountMinor);
+    if (remaining === 0) this.#dailySpend.delete(spendKey);
+    else this.#dailySpend.set(spendKey, remaining);
+    delete transaction.capReservation;
   }
 
   #must<K, V>(map: Map<K, V>, key: K, label: string): V {
