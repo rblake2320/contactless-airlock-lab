@@ -283,6 +283,31 @@ test("expired capped authorization releases its daily reservation", () => {
   );
 });
 
+test("revoked trusted device cannot approve a new provisioning challenge", () => {
+  const { engine, keys } = setup();
+  const request = engine.requestProvisioning({
+    subjectId: "subject-1",
+    accountId: "account-1",
+    tokenId: "revoke-token",
+    trustedDeviceId: "device-1",
+    capMinor: 1_000,
+  });
+  engine.revokeTrustedDevice("device-1");
+  assert.equal(engine.getDevice("device-1")?.status, "revoked");
+  assert.throws(
+    () =>
+      engine.approveProvisioning(
+        request.requestId,
+        signApproval(request.challenge, keys.keyId, keys.privateKeyPem),
+      ),
+    /revoked/,
+  );
+  assert.throws(
+    () => engine.revokeTrustedDevice("device-1"),
+    /already revoked/,
+  );
+});
+
 test("device enrollment collision and unknown runtime enums fail closed", () => {
   const { engine, keys } = setup();
   assert.throws(
