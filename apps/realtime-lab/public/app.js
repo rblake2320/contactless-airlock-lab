@@ -63,11 +63,24 @@ async function action(path, body) {
   try {
     const response = await fetch(path, {
       method: "POST",
-      headers: body ? { "content-type": "application/json" } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body ?? {}),
     });
-    const payload = await response.json();
+    const text = await response.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      throw new Error(`Server returned an unreadable response (HTTP ${response.status}).`);
+    }
     render(payload.state ?? payload);
+  } catch (error) {
+    $("connection").textContent = "Connection error";
+    $("result-title").textContent = "Network error";
+    $("result-title").dataset.tone = "bad";
+    $("result-message").textContent = error instanceof Error
+      ? `The lab request did not complete: ${error.message}`
+      : "The lab request did not complete. Check that the local server is running.";
   } finally {
     delete document.body.dataset.busy;
   }

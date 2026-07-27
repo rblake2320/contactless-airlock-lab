@@ -7,10 +7,20 @@ import { AirlockEngine, type ProvisioningRequest, type TransactionRecord } from 
 import { generateDeviceKeyPair, signApproval, type DeviceKeyPair } from "../../packages/crypto/deviceKeys.ts";
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "public");
+const MAX_REQUEST_BODY_BYTES = 16 * 1024;
+const SECURITY_HEADERS = Object.freeze({
+  "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+  "cross-origin-opener-policy": "same-origin",
+  "cross-origin-resource-policy": "same-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+  "referrer-policy": "no-referrer",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+});
 const SYNTHETIC = Object.freeze({
   subjectId: "demo-subject-001",
   accountId: "demo-account-001",
-  deviceId: "trusted-device-001",
+  deviceId: "00000000-0000-4000-8000-000000000001",
   tokenId: "synthetic-token-001",
 });
 
@@ -32,6 +42,95 @@ interface LabState {
     message: string;
     at: string;
   };
+}
+
+class HttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function applySecurityHeaders(res: ServerResponse): void {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    res.setHeader(name, value);
+  }
+}
+
+function enforceMutationSource(req: IncomingMessage): void {
+  const fetchSite = req.headers["sec-fetch-site"];
+  if (
+    typeof fetchSite === "string" &&
+    fetchSite !== "same-origin" &&
+    fetchSite !== "none"
+  ) {
+    throw new HttpError(403, "Cross-origin mutation request rejected.");
+  }
+
+  const origin = req.headers.origin;
+  if (origin === undefined) return; // Preserve non-browser CLI/partner harness operation.
+  if (typeof origin !== "string" || origin === "null") {
+    throw new HttpError(403, "Untrusted mutation origin rejected.");
+  }
+  const host = req.headers.host;
+  if (!host) throw new HttpError(400, "Host header is required.");
+  let normalizedOrigin: string;
+  try {
+    const parsed = new URL(origin);
+    if (origin !== parsed.origin || parsed.protocol !== "http:") {
+      throw new Error("not a serialized HTTP origin");
+    }
+    normalizedOrigin = parsed.origin;
+  } catch {
+    throw new HttpError(403, "Invalid mutation origin rejected.");
+  }
+  if (normalizedOrigin !== `http://${host}`) {
+    throw new HttpError(403, "Cross-origin mutation request rejected.");
+  }
+}
+
+async function readBoundedBody(req: IncomingMessage): Promise<Buffer> {
+  const declaredLength = req.headers["content-length"];
+  if (declaredLength !== undefined) {
+    const length = Number(declaredLength);
+    if (!Number.isSafeInteger(length) || length < 0) {
+      throw new HttpError(400, "Invalid Content-Length.");
+    }
+    if (length > MAX_REQUEST_BODY_BYTES) {
+      throw new HttpError(413, `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes.`);
+    }
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.from(chunk);
+    total += buffer.length;
+    if (total > MAX_REQUEST_BODY_BYTES) {
+      throw new HttpError(413, `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes.`);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function parseJsonBody(req: IncomingMessage, body: Buffer): Record<string, unknown> {
+  const contentType = req.headers["content-type"]?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json") {
+    throw new HttpError(415, "Content-Type must be application/json.");
+  }
+  if (!body.length) throw new HttpError(400, "JSON request body is required.");
+  let value: unknown;
+  try {
+    value = JSON.parse(body.toString("utf8"));
+  } catch {
+    throw new HttpError(400, "Malformed JSON request body.");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "JSON body must be an object.");
+  }
+  return value as Record<string, unknown>;
 }
 
 function parseAmountMinor(value: unknown): number {
@@ -127,17 +226,6 @@ function publicSnapshot(state: LabState) {
   };
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
-  if (!chunks.length) return {};
-  const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("JSON body must be an object");
-  }
-  return value as Record<string, unknown>;
-}
-
 function json(res: ServerResponse, status: number, value: unknown) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
@@ -177,8 +265,14 @@ export function createLabServer() {
   };
 
   return createServer(async (req, res) => {
+    applySecurityHeaders(res);
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      let requestBody: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+      if (req.method === "POST" && url.pathname.startsWith("/api/")) {
+        enforceMutationSource(req);
+        requestBody = await readBoundedBody(req);
+      }
       if (req.method === "GET" && url.pathname === "/api/health") {
         return json(res, 200, { ok: true, simulator: true });
       }
@@ -249,7 +343,7 @@ export function createLabServer() {
         return json(res, 200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === "/api/transaction/request") {
-        const body = await readJson(req);
+        const body = parseJsonBody(req, requestBody);
         if (state.transaction) throw new Error("A transaction already exists. Reset the lab to start another.");
         state.transaction = state.engine.authorize({
           transactionId: `synthetic-tx-${Date.now()}`,
@@ -402,6 +496,9 @@ export function createLabServer() {
       return json(res, 404, { error: "not found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
+      if (error instanceof HttpError) {
+        return json(res, error.status, { error: message });
+      }
       state.lastResult = {
         ok: false,
         outcome: "blocked",

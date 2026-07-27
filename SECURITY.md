@@ -90,6 +90,15 @@ Passing repository tests is evidence about the tested lab behavior only. It is
 not evidence of PCI compliance, network certification, regulatory approval, or
 production authorization.
 
+The repository CI performs strict TypeScript checking, executable lab checks,
+a dependency vulnerability audit, and a narrow obvious-credential
+precheck without requiring secrets. These controls are baseline hygiene, not a
+replacement for dedicated SAST, full-history secret scanning, dependency
+review, SBOM/provenance generation, container scanning, penetration testing, or
+partner security assessment. See
+[docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md) for the closure
+gate.
+
 ## Cryptographic review rules
 
 Protocol changes require review of the complete signed binding, canonical
