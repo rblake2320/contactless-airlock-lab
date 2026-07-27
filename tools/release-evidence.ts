@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -30,15 +30,42 @@ function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export interface CommandInvocation {
+  executable: string;
+  args: string[];
+}
+
+export function resolveCommandInvocation(
+  command: string,
+  args: readonly string[],
+  platform = process.platform,
+  npmExecPath = process.env.npm_execpath,
+): CommandInvocation {
+  if (platform !== "win32" || command !== "npm") {
+    return { executable: command, args: [...args] };
+  }
+
+  // Node 24 rejects direct spawn of .cmd wrappers with EINVAL on Windows.
+  // Invoke npm's JavaScript entry point with this exact Node executable instead.
+  // Arguments remain an array and never pass through cmd.exe or a shell parser.
+  const npmCli = npmExecPath?.trim() ||
+    resolve(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  if (!existsSync(npmCli)) {
+    throw new Error(`npm CLI entry point not found: ${npmCli}`);
+  }
+  return {
+    executable: process.execPath,
+    args: [npmCli, ...args],
+  };
+}
+
 function defaultRunner(
   command: string,
   args: readonly string[],
   cwd: string,
 ): CommandResult {
-  const executable = process.platform === "win32" && command === "npm"
-    ? "npm.cmd"
-    : command;
-  const result = spawnSync(executable, [...args], {
+  const invocation = resolveCommandInvocation(command, args);
+  const result = spawnSync(invocation.executable, invocation.args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
