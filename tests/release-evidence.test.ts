@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   generateReleaseEvidence,
+  resolveCommandInvocation,
   type CommandRunner,
 } from "../tools/release-evidence.ts";
 
@@ -127,5 +128,39 @@ test("release evidence refuses dirty trees and mismatched commits", () => {
       }),
       /commit mismatch/,
     );
+  });
+});
+
+test("Windows npm commands bypass cmd wrappers without changing arguments", () => {
+  withFixture((directory) => {
+    const npmCli = join(directory, "npm-cli.js");
+    writeFileSync(npmCli, "// synthetic npm CLI entry point\n");
+    const args = [
+      "run",
+      "typecheck",
+      "--",
+      "--literal=a&b",
+      "space preserved",
+      "\"quoted\"",
+    ];
+
+    const invocation = resolveCommandInvocation(
+      "npm",
+      args,
+      "win32",
+      npmCli,
+    );
+
+    assert.equal(invocation.executable, process.execPath);
+    assert.deepEqual(invocation.args, [npmCli, ...args]);
+    assert.notEqual(invocation.executable.toLowerCase(), "npm.cmd");
+    assert.deepEqual(args, [
+      "run",
+      "typecheck",
+      "--",
+      "--literal=a&b",
+      "space preserved",
+      "\"quoted\"",
+    ], "resolver must not mutate or shell-quote caller arguments");
   });
 });
