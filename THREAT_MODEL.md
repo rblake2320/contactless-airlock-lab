@@ -164,6 +164,13 @@ exported to retention-controlled storage. Logs record decisions and key IDs,
 not private keys, full credentials, biometric material, or sensitive payment
 data unnecessary to the investigation.
 
+The optional authenticated audit profile adds per-event HMAC tags and an
+external chain-tip anchor. Its key and anchor must remain outside the
+SQLite/snapshot compromise boundary; the ordinary hash chain alone cannot stop
+an attacker with write access from recomputing the entire chain. The current
+browser simulator does not yet wire the optional profile into restart storage.
+See [docs/AUTHENTICATED_AUDIT.md](docs/AUTHENTICATED_AUDIT.md).
+
 The current lab uses an unkeyed SHA-256 hash chain. It detects accidental
 damage and edits whose hashes were not recomputed, but it does not authenticate
 the origin of a complete chain. A writer who controls the SQLite snapshot can

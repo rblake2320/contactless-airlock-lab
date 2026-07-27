@@ -1,0 +1,662 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Contactless Airlock Realtime Lab API",
+    "version": "0.1.0",
+    "description": "SIMULATOR ONLY. Exact HTTP contract for the local realtime demonstration. This is not a bank, processor, wallet, TSP, network, or production partner API."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "servers": [
+    {
+      "url": "http://127.0.0.1:8788",
+      "description": "Local synthetic-data simulator"
+    }
+  ],
+  "tags": [
+    {
+      "name": "simulator",
+      "description": "Synthetic reference implementation; no payment rail is connected."
+    }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "getLabHealth",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "responses": {
+          "200": {
+            "description": "Lab process health",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/state": {
+      "get": {
+        "operationId": "getLabState",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }
+        }
+      }
+    },
+    "/api/events": {
+      "get": {
+        "operationId": "streamLabState",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "responses": {
+          "200": {
+            "description": "Server-sent state events and 15-second comment heartbeats",
+            "headers": {
+              "Cache-Control": {
+                "schema": { "type": "string", "const": "no-store" }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "Each state event is `event: state` followed by one JSON PublicState data line."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reset": {
+      "post": {
+        "operationId": "resetLab",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/provision/request": {
+      "post": {
+        "operationId": "requestSyntheticProvisioning",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/provision/attack": {
+      "post": {
+        "operationId": "attemptPendingTokenSpend",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/provision/approve": {
+      "post": {
+        "operationId": "approveSyntheticProvisioning",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/device/revoke": {
+      "post": {
+        "operationId": "revokeSyntheticDevice",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/transaction/request": {
+      "post": {
+        "operationId": "requestSyntheticTransaction",
+        "tags": ["simulator"],
+        "security": [],
+        "x-simulator-only": true,
+        "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TransactionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/transaction/confirm": {
+      "post": {
+        "operationId": "confirmSyntheticTransaction",
+        "tags": ["simulator"], "security": [], "x-simulator-only": true, "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/transaction/expire": {
+      "post": {
+        "operationId": "expireSyntheticTransaction",
+        "tags": ["simulator"], "security": [], "x-simulator-only": true, "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/transaction/clear": {
+      "post": {
+        "operationId": "receiveSyntheticClearing",
+        "tags": ["simulator"], "security": [], "x-simulator-only": true, "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/demonstrate/audit-tamper": {
+      "post": {
+        "operationId": "demonstrateAuditTamper",
+        "tags": ["simulator"], "security": [], "x-simulator-only": true, "x-maxBodyBytes": 16384,
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" }
+        ],
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" },
+          "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" },
+          "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" },
+          "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" },
+          "431": { "$ref": "#/components/responses/SimpleError" },
+          "500": { "$ref": "#/components/responses/StateResponse" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    },
+    "/api/demonstrate/{attackName}": {
+      "post": {
+        "operationId": "demonstrateBindingAttack",
+        "tags": ["simulator"], "security": [], "x-simulator-only": true, "x-maxBodyBytes": 16384,
+        "requestBody": { "$ref": "#/components/requestBodies/OptionalObject" },
+        "parameters": [
+          { "$ref": "#/components/parameters/Origin" },
+          { "$ref": "#/components/parameters/SecFetchSite" },
+          { "$ref": "#/components/parameters/IdempotencyKey" },
+          {
+            "name": "attackName",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "altered-amount",
+                "altered-merchant",
+                "modified-nonce",
+                "wrong-device",
+                "wrong-key",
+                "expired-challenge",
+                "reused-signature"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": { "$ref": "#/components/responses/StateResponse" }, "400": { "$ref": "#/components/responses/SimpleError" },
+          "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
+          "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
+          "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
+          "503": { "$ref": "#/components/responses/StateError" }
+        }
+      }
+    }
+  },
+  "components": {
+    "requestBodies": {
+      "OptionalObject": {
+        "required": false,
+        "description": "No body is needed. If supplied, it must be a JSON object; ignored properties are accepted by the current lab.",
+        "content": {
+          "application/json": {
+            "schema": { "type": "object", "additionalProperties": true }
+          }
+        }
+      }
+    },
+    "parameters": {
+      "Origin": {
+        "name": "Origin",
+        "in": "header",
+        "required": false,
+        "description": "When present, must be a serialized HTTP origin exactly matching `http://` plus the Host header. Absence preserves CLI/harness use.",
+        "schema": { "type": "string", "format": "uri" }
+      },
+      "SecFetchSite": {
+        "name": "Sec-Fetch-Site",
+        "in": "header",
+        "required": false,
+        "description": "When present on a mutation, only same-origin or none is accepted.",
+        "schema": { "type": "string", "enum": ["same-origin", "none"] }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": false,
+        "description": "Optional in ephemeral mode and required when AIRLOCK_DB_PATH enables persistence. The key is scoped to canonical method, path/query, and JSON body; reuse with different input returns 409.",
+        "x-requiredWhen": "AIRLOCK_DB_PATH is set",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+        }
+      }
+    },
+    "responses": {
+      "StateResponse": {
+        "description": "Current public simulator state",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/PublicState" }
+          }
+        }
+      },
+      "SimpleError": {
+        "description": "Request rejected before a stateful lab operation completed",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SimpleError" }
+          }
+        }
+      },
+      "ConflictError": {
+        "description": "Either a request-level idempotency conflict or a state conflict with authoritative public state",
+        "content": {
+          "application/json": {
+            "schema": {
+              "oneOf": [
+                { "$ref": "#/components/schemas/SimpleError" },
+                { "$ref": "#/components/schemas/StateError" }
+              ]
+            }
+          }
+        }
+      },
+      "StateError": {
+        "description": "State conflict or persistence failure with authoritative public simulator state",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/StateError" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ok", "simulator"],
+        "properties": {
+          "ok": { "type": "boolean", "const": true },
+          "simulator": { "type": "boolean", "const": true }
+        }
+      },
+      "SimpleError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error"],
+        "properties": {
+          "error": { "type": "string", "minLength": 1 }
+        }
+      },
+      "StateError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["error", "state"],
+        "properties": {
+          "error": { "type": "string", "minLength": 1 },
+          "state": { "$ref": "#/components/schemas/PublicState" }
+        }
+      },
+      "TransactionRequest": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["amount", "merchantId"],
+        "properties": {
+          "amount": {
+            "type": "string",
+            "pattern": "^\\s*(?:0\\.(?:[1-9]|[0-9][1-9]|[1-9][0-9])|(?:[1-9][0-9]{0,12}|[1-8][0-9]{13}|900[0-6][0-9]{10}|90070[0-9]{9}|90071[0-8][0-9]{8}|900719[0-8][0-9]{7}|9007199[0-1][0-9]{6}|90071992[0-4][0-9]{5}|900719925[0-3][0-9]{4}|9007199254[0-6][0-9]{3}|90071992547[0-3][0-9]{2}|9007199254740[0-7]|90071992547408)(?:\\.[0-9]{1,2})?|90071992547409(?:\\.(?:[0-8]?[0-9]|9[01]))?)\\s*$",
+            "description": "After ECMAScript trim, a positive decimal major-unit amount with at most two fractional digits whose minor-unit value is at most 9007199254740991."
+          },
+          "merchantId": {
+            "type": "string",
+            "pattern": "^\\s*[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\\s*$",
+            "description": "After ECMAScript trim, 1–64 characters in the documented ASCII identifier set."
+          }
+        }
+      },
+      "TrustedDevice": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["deviceId", "subjectId", "keyId", "status"],
+        "properties": {
+          "deviceId": { "type": "string" },
+          "subjectId": { "type": "string" },
+          "keyId": { "type": "string" },
+          "status": { "type": "string", "enum": ["active", "revoked"] }
+        }
+      },
+      "PaymentToken": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tokenId", "subjectId", "accountId", "state"],
+        "properties": {
+          "tokenId": { "type": "string" },
+          "subjectId": { "type": "string" },
+          "accountId": { "type": "string" },
+          "state": { "type": "string", "enum": ["pending", "active_capped", "active_full", "declined"] },
+          "perTransactionCapMinor": { "type": "integer", "minimum": 1 },
+          "dailyCapMinor": { "type": "integer", "minimum": 1 }
+        }
+      },
+      "ChallengeBinding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "protocolVersion", "purpose", "challengeId", "subjectId", "accountId",
+          "paymentTokenId", "trustedDeviceId", "issuedAt", "expiresAt", "audience"
+        ],
+        "properties": {
+          "protocolVersion": { "type": "string", "const": "airlock.v1" },
+          "purpose": { "type": "string", "enum": ["provision-payment-token", "confirm-transaction"] },
+          "challengeId": { "type": "string" },
+          "subjectId": { "type": "string" },
+          "accountId": { "type": "string" },
+          "paymentTokenId": { "type": "string" },
+          "trustedDeviceId": { "type": "string" },
+          "transactionId": { "type": "string" },
+          "merchantId": { "type": "string" },
+          "amountMinor": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+          "currency": { "type": "string", "enum": ["USD", "EUR", "GBP", "CAD", "AUD"] },
+          "issuedAt": { "type": "string", "format": "date-time" },
+          "expiresAt": { "type": "string", "format": "date-time" },
+          "audience": { "type": "string", "const": "airlock-issuer" }
+        }
+      },
+      "ProvisioningRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["requestId", "tokenId", "trustedDeviceId", "state", "challenge"],
+        "properties": {
+          "requestId": { "type": "string" },
+          "tokenId": { "type": "string" },
+          "trustedDeviceId": { "type": "string" },
+          "state": {
+            "type": "string",
+            "enum": [
+              "requested", "risk_scored", "trusted_device_challenge", "approved",
+              "token_active_capped", "token_active_full", "declined", "expired"
+            ]
+          },
+          "challenge": { "$ref": "#/components/schemas/ChallengeBinding" }
+        }
+      },
+      "Transaction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["transactionId", "tokenId", "merchantId", "amountMinor", "currency", "state", "strategy"],
+        "properties": {
+          "transactionId": { "type": "string" },
+          "tokenId": { "type": "string" },
+          "merchantId": { "type": "string" },
+          "amountMinor": { "type": "integer", "minimum": 1 },
+          "currency": { "type": "string", "const": "USD" },
+          "state": {
+            "type": "string",
+            "enum": [
+              "received", "confirmation_pending", "confirmed", "declined", "expired",
+              "reversal_requested", "reversed", "clearing_received", "settled", "exception"
+            ]
+          },
+          "strategy": { "type": "string", "enum": ["pre_authorization_step_up", "provisional_monitoring"] },
+          "challenge": { "$ref": "#/components/schemas/ChallengeBinding" },
+          "capReservation": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["spendKey", "amountMinor"],
+            "properties": {
+              "spendKey": { "type": "string" },
+              "amountMinor": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      },
+      "ConfirmationView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["amountMinor", "currency", "merchantId", "paymentTokenId", "trustedDeviceId", "challengeId", "expiresAt"],
+        "properties": {
+          "amountMinor": { "type": "integer", "minimum": 1 },
+          "currency": { "type": "string", "enum": ["USD", "EUR", "GBP", "CAD", "AUD"] },
+          "merchantId": { "type": "string" },
+          "paymentTokenId": { "type": "string" },
+          "trustedDeviceId": { "type": "string" },
+          "challengeId": { "type": "string" },
+          "expiresAt": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Actions": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestProvisioning", "attackProvisioning", "approveProvisioning",
+          "revokeDevice", "requestTransaction", "confirmTransaction",
+          "expireTransaction", "receiveClearing", "negativeBinding"
+        ],
+        "properties": {
+          "requestProvisioning": { "type": "boolean" },
+          "attackProvisioning": { "type": "boolean" },
+          "approveProvisioning": { "type": "boolean" },
+          "revokeDevice": { "type": "boolean" },
+          "requestTransaction": { "type": "boolean" },
+          "confirmTransaction": { "type": "boolean" },
+          "expireTransaction": { "type": "boolean" },
+          "receiveClearing": { "type": "boolean" },
+          "negativeBinding": { "type": "boolean" }
+        }
+      },
+      "AuditEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sequence", "eventId", "type", "correlationId", "occurredAt", "payload", "previousHash", "hash"],
+        "properties": {
+          "sequence": { "type": "integer", "minimum": 1 },
+          "eventId": { "type": "string" },
+          "type": { "type": "string" },
+          "correlationId": { "type": "string" },
+          "causationId": { "type": "string" },
+          "occurredAt": { "type": "string", "format": "date-time" },
+          "payload": { "type": "object", "additionalProperties": true },
+          "previousHash": { "type": "string" },
+          "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        }
+      },
+      "AuditView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["valid", "events"],
+        "properties": {
+          "valid": { "type": "boolean" },
+          "events": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/AuditEvent" }
+          }
+        }
+      },
+      "Demonstration": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "blocked", "message"],
+        "properties": {
+          "name": { "type": "string" },
+          "blocked": { "type": "boolean" },
+          "message": { "type": "string" },
+          "auditCopyValid": { "type": "boolean" }
+        }
+      },
+      "LastResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ok", "outcome", "action", "message", "at"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "outcome": { "type": "string", "enum": ["accepted", "blocked", "warning"] },
+          "action": { "type": "string" },
+          "message": { "type": "string" },
+          "at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "PublicState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["simulator", "notice", "device", "actions", "audit", "lastResult"],
+        "properties": {
+          "simulator": { "type": "boolean", "const": true },
+          "notice": {
+            "type": "string",
+            "const": "Synthetic reference implementation. No PAN, bank, wallet, processor, or payment rail is connected."
+          },
+          "device": { "$ref": "#/components/schemas/TrustedDevice" },
+          "token": { "$ref": "#/components/schemas/PaymentToken" },
+          "provisioning": { "$ref": "#/components/schemas/ProvisioningRequest" },
+          "transaction": { "$ref": "#/components/schemas/Transaction" },
+          "confirmation": { "$ref": "#/components/schemas/ConfirmationView" },
+          "actions": { "$ref": "#/components/schemas/Actions" },
+          "audit": { "$ref": "#/components/schemas/AuditView" },
+          "demonstration": { "$ref": "#/components/schemas/Demonstration" },
+          "lastResult": { "$ref": "#/components/schemas/LastResult" }
+        }
+      }
+    }
+  }
+}
