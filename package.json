@@ -7,6 +7,7 @@
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "demo": "node --experimental-strip-types tools/demo.ts",
+    "lab": "node --experimental-strip-types apps/realtime-lab/server.ts",
     "scenarios": "node --experimental-strip-types tools/scenarios.ts",
     "check": "npm test && npm run scenarios"
   },
