@@ -25,10 +25,26 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-      - run: npm ci --ignore-scripts
+      - name: Verify pristine checkout before locked install
+        shell: bash
+        run: test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Install exactly from package-lock
+        run: npm ci --ignore-scripts
       - run: npm run security:audit
       - run: npm run check
       - run: npm run demo
+      - name: Generate bounded release evidence
+        run: >-
+          npm run release:evidence --
+          --expected-commit "${{ github.sha }}"
+          --output release-evidence/release.json
+      - name: Retain release evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: airlock-release-evidence
+          path: release-evidence/release.json
+          if-no-files-found: error
+          retention-days: 14
       - name: Reject obvious committed secrets and private keys
         shell: bash
         run: |

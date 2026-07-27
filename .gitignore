@@ -10,3 +10,6 @@ dist/
 *.sqlite-*
 *.sqlite3
 *.sqlite3-*
+release-evidence/
+__pycache__/
+*.py[cod]

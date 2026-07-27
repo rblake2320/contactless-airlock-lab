@@ -9,6 +9,8 @@ const profile = {
   retry: { key: "approval-delivery", hash: "sha256:approval", status: "confirmed" },
   expiry: { key: "expiry-worker", hash: "sha256:expiry", status: "expired" },
   cancellation: { key: "cancellation-worker", hash: "sha256:cancellation", status: "cancelled" },
+  "hash-a": { key: "shared-conflicting-key", hash: "sha256:request-a", status: "confirmed" },
+  "hash-b": { key: "shared-conflicting-key", hash: "sha256:request-b", status: "cancelled" },
 }[contender];
 if (!profile) throw new Error(`unknown contender: ${contender}`);
 

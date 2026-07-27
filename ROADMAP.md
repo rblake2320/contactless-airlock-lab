@@ -12,10 +12,14 @@ promote simulator behavior into a production payment claim.
 - [x] Exact-field and unknown-field rejection
 - [x] Versioned canonical binding vectors match exact UTF-8 bytes and SHA-256
       in TypeScript and an independent Python standard-library verifier
+- [x] Signed approvals and enrolled keys use one explicit versioned
+      P-256/SHA-256/DER profile with runtime and restore downgrade rejection
 - [x] One-time challenge consumption in the single-process lab
 - [x] Expiry and terminal-state behavior
 - [x] Monotonic provisioning and transaction state machines
 - [x] In-memory hash-chain audit integrity check
+- [ ] Authenticated append-only audit sink with a key or signed chain-tip
+      anchor outside the primary database trust boundary
 - [x] Fraudulent provisioning, legitimate flow, and reversal/clearing scenarios
 - [x] Threat model, security policy, test plan, and partner boundaries
 
@@ -53,7 +57,9 @@ promote simulator behavior into a production payment claim.
 - [ ] Property-based state-machine tests
 - [x] Barrier-driven multi-process, single-host SQLite race tests; PostgreSQL
       and multi-host equivalence remain open
-- [ ] Fuzz canonical message decoding and schema validation
+- [x] Deterministic seeded property-style canonical binding generation and
+      malformed-input mutation run in the dependency-free default test suite
+- [ ] Coverage-guided fuzzing of canonical message decoding and schema validation
 - [ ] Key rotation, revocation, recovery, and compromised-device exercises
 - [ ] Push-fatigue and misleading-transaction UX tests
 - [ ] Caps enforced transactionally across concurrent authorizations
@@ -63,6 +69,9 @@ promote simulator behavior into a production payment claim.
 - [x] Dedicated CodeQL SAST and full-history Gitleaks workflows
 - [x] CycloneDX SBOM generated from the checked-out source/dependency tree and
       retained as a workflow artifact
+- [x] Bounded release-evidence generator records commit, lockfile digest,
+      tool versions, normalized tests/scenarios, and simulator boundaries;
+      explicitly unsigned and unattested
 - [ ] Dependency-review policy, artifact attestation/signed build provenance,
       and independent CI/action review
 - [ ] Container scanning if and when a deployable container image exists

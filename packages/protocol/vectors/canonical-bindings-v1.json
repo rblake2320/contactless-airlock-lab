@@ -67,6 +67,86 @@
       "sha256": "188f3e301b0c08c62083c35dd467b274035d9bfa1755a246410caeae97cabbd8"
     },
     {
+      "id": "transaction-exponent-integer",
+      "valid": true,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "challenge-exponent",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction-exponent",
+        "merchantId": "merchant",
+        "amountMinor": 1e3,
+        "currency": "USD",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "audience": "airlock-issuer"
+      },
+      "canonicalBase64": "eyJwcm90b2NvbFZlcnNpb24iOiJhaXJsb2NrLnYxIiwicHVycG9zZSI6ImNvbmZpcm0tdHJhbnNhY3Rpb24iLCJjaGFsbGVuZ2VJZCI6ImNoYWxsZW5nZS1leHBvbmVudCIsInN1YmplY3RJZCI6InN1YmplY3QiLCJhY2NvdW50SWQiOiJhY2NvdW50IiwicGF5bWVudFRva2VuSWQiOiJ0b2tlbiIsInRydXN0ZWREZXZpY2VJZCI6ImRldmljZSIsInRyYW5zYWN0aW9uSWQiOiJ0cmFuc2FjdGlvbi1leHBvbmVudCIsIm1lcmNoYW50SWQiOiJtZXJjaGFudCIsImFtb3VudE1pbm9yIjoxMDAwLCJjdXJyZW5jeSI6IlVTRCIsImlzc3VlZEF0IjoiMjAyNi0wNy0yN1QxMjowMDowMC4wMDBaIiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0yN1QxMjowMDozMC4wMDBaIiwiYXVkaWVuY2UiOiJhaXJsb2NrLWlzc3VlciJ9",
+      "sha256": "48d20921d0003dc39c6b481f6f9a050cc3c0b50708f5d18a9e2013d5c0c9a585"
+    },
+    {
+      "id": "transaction-decimal-integer",
+      "valid": true,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "challenge-decimal",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction-decimal",
+        "merchantId": "merchant",
+        "amountMinor": 1000.0,
+        "currency": "USD",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "audience": "airlock-issuer"
+      },
+      "canonicalBase64": "eyJwcm90b2NvbFZlcnNpb24iOiJhaXJsb2NrLnYxIiwicHVycG9zZSI6ImNvbmZpcm0tdHJhbnNhY3Rpb24iLCJjaGFsbGVuZ2VJZCI6ImNoYWxsZW5nZS1kZWNpbWFsIiwic3ViamVjdElkIjoic3ViamVjdCIsImFjY291bnRJZCI6ImFjY291bnQiLCJwYXltZW50VG9rZW5JZCI6InRva2VuIiwidHJ1c3RlZERldmljZUlkIjoiZGV2aWNlIiwidHJhbnNhY3Rpb25JZCI6InRyYW5zYWN0aW9uLWRlY2ltYWwiLCJtZXJjaGFudElkIjoibWVyY2hhbnQiLCJhbW91bnRNaW5vciI6MTAwMCwiY3VycmVuY3kiOiJVU0QiLCJpc3N1ZWRBdCI6IjIwMjYtMDctMjdUMTI6MDA6MDAuMDAwWiIsImV4cGlyZXNBdCI6IjIwMjYtMDctMjdUMTI6MDA6MzAuMDAwWiIsImF1ZGllbmNlIjoiYWlybG9jay1pc3N1ZXIifQ==",
+      "sha256": "38907c178ffbc2f879e55330230bd54d7c19fadf2202ad882e1af2061f3cc1b7"
+    },
+    {
+      "id": "opaque-id-nfc",
+      "valid": true,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "unicode-normalization-proof",
+        "subjectId": "café",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "canonicalBase64": "eyJwcm90b2NvbFZlcnNpb24iOiJhaXJsb2NrLnYxIiwicHVycG9zZSI6InByb3Zpc2lvbi1wYXltZW50LXRva2VuIiwiY2hhbGxlbmdlSWQiOiJ1bmljb2RlLW5vcm1hbGl6YXRpb24tcHJvb2YiLCJzdWJqZWN0SWQiOiJjYWbDqSIsImFjY291bnRJZCI6ImFjY291bnQiLCJwYXltZW50VG9rZW5JZCI6InRva2VuIiwidHJ1c3RlZERldmljZUlkIjoiZGV2aWNlIiwiaXNzdWVkQXQiOiIyMDI2LTA3LTI3VDEyOjAwOjAwLjAwMFoiLCJleHBpcmVzQXQiOiIyMDI2LTA3LTI3VDEyOjAyOjAwLjAwMFoiLCJhdWRpZW5jZSI6ImFpcmxvY2staXNzdWVyIn0=",
+      "sha256": "348b61fa1170987ecdb7bf4f44b966681a25b012bd45d090aab8bcbcd244f0cc"
+    },
+    {
+      "id": "opaque-id-nfd",
+      "valid": true,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "unicode-normalization-proof",
+        "subjectId": "cafe\u0301",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "canonicalBase64": "eyJwcm90b2NvbFZlcnNpb24iOiJhaXJsb2NrLnYxIiwicHVycG9zZSI6InByb3Zpc2lvbi1wYXltZW50LXRva2VuIiwiY2hhbGxlbmdlSWQiOiJ1bmljb2RlLW5vcm1hbGl6YXRpb24tcHJvb2YiLCJzdWJqZWN0SWQiOiJjYWZlzIEiLCJhY2NvdW50SWQiOiJhY2NvdW50IiwicGF5bWVudFRva2VuSWQiOiJ0b2tlbiIsInRydXN0ZWREZXZpY2VJZCI6ImRldmljZSIsImlzc3VlZEF0IjoiMjAyNi0wNy0yN1QxMjowMDowMC4wMDBaIiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0yN1QxMjowMjowMC4wMDBaIiwiYXVkaWVuY2UiOiJhaXJsb2NrLWlzc3VlciJ9",
+      "sha256": "02a8f31b6beb91708da231a484a02a3fe9ef571af3f7ddff52197f9ba81ddc43"
+    },
+    {
       "id": "unknown-field",
       "valid": false,
       "binding": {

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Independent stdlib verifier for Airlock canonical binding vectors."""
+"""Independent stdlib canonicalization verifier for Airlock binding vectors.
+
+This tool verifies binding validation, exact canonical bytes, and hashes. It
+does not implement or verify approval signatures.
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import re
 import sys
 from datetime import datetime
@@ -76,9 +81,11 @@ def validate(binding: Any) -> None:
             if not _valid_string(binding.get(field)):
                 raise BindingError(f"INVALID_FIELD:{field}")
         amount = binding.get("amountMinor")
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            raise BindingError("INVALID_AMOUNT")
         if (
-            isinstance(amount, bool)
-            or not isinstance(amount, int)
+            not math.isfinite(amount)
+            or not float(amount).is_integer()
             or amount <= 0
             or amount > MAX_SAFE_INTEGER
         ):
@@ -98,6 +105,10 @@ def validate(binding: Any) -> None:
 def canonicalize(binding: Any) -> bytes:
     validate(binding)
     ordered = {field: binding[field] for field in ORDER if field in binding}
+    # JSON.parse maps all JSON numbers to JavaScript Number. JSON.stringify
+    # emits an integer-valued Number such as 1e3 or 1000.0 as `1000`.
+    if "amountMinor" in ordered:
+        ordered["amountMinor"] = int(ordered["amountMinor"])
     text = json.dumps(
         ordered,
         ensure_ascii=False,

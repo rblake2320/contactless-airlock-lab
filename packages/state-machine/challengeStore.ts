@@ -7,7 +7,11 @@ import type {
   Currency,
   SignedApproval,
 } from "../protocol/types.ts";
-import { verifyApproval } from "../crypto/deviceKeys.ts";
+import {
+  APPROVAL_ALGORITHM,
+  verifyApproval,
+} from "../crypto/deviceKeys.ts";
+import type { ApprovalAlgorithm } from "../protocol/types.ts";
 
 export interface CreateChallengeInput {
   purpose: ChallengePurpose;
@@ -108,6 +112,7 @@ export class ChallengeStore {
     approval: SignedApproval,
     expectedPublicKey: string,
     now = new Date(),
+    expectedAlgorithm: ApprovalAlgorithm = APPROVAL_ALGORITHM,
   ): ChallengeRecord {
     const record = this.#records.get(approval.binding.challengeId);
     if (!record) throw new Error("unknown challenge");
@@ -124,7 +129,7 @@ export class ChallengeStore {
       record.status = "expired";
       throw new Error("challenge expired");
     }
-    if (!verifyApproval(approval, expectedPublicKey)) {
+    if (!verifyApproval(approval, expectedPublicKey, expectedAlgorithm)) {
       throw new Error("invalid device signature");
     }
     record.status = "confirmed";

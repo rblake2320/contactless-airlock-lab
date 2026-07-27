@@ -20,12 +20,19 @@ interface WorkerResult {
 const workerPath = fileURLToPath(
   new URL("./fixtures/durable-terminal-worker.ts", import.meta.url),
 );
+const lockHolderPath = fileURLToPath(
+  new URL("./fixtures/sqlite-lock-holder.ts", import.meta.url),
+);
 const contenders = ["approval", "retry", "expiry", "cancellation"] as const;
+type Contender =
+  | typeof contenders[number]
+  | "hash-a"
+  | "hash-b";
 
 function spawnContender(
   dbPath: string,
   challengeId: string,
-  contender: typeof contenders[number],
+  contender: Contender,
 ) {
   const child = spawn(
     process.execPath,
@@ -106,6 +113,13 @@ test("barrier-driven processes produce one restart-durable terminal outcome", as
       assert.ok(["confirmed", "expired", "cancelled"].includes(terminal.status));
       assert.equal(terminal.value.terminal, terminal.status);
       assert.equal(terminal.value.winner, effectWinners[0].contender);
+      for (const replay of results.filter((result) => result.ok && result.replayed)) {
+        assert.deepEqual(
+          replay.value,
+          terminal.value,
+          `replay ${replay.contender} must return the persisted winner`,
+        );
+      }
       assert.throws(
         () => restarted.compareAndSwap(
           challengeId,
@@ -123,6 +137,107 @@ test("barrier-driven processes produce one restart-durable terminal outcome", as
     for (const child of children) {
       if (child.exitCode === null) child.kill();
     }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("different request hashes racing on one idempotency key persist exactly one effect", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "airlock-hash-race-"));
+  const dbPath = join(directory, "race.sqlite");
+  const children = new Set<ChildProcess>();
+  try {
+    for (let round = 0; round < 10; round += 1) {
+      const challengeId = `hash-race-${round}`;
+      const setup = new DurableStore(dbPath);
+      setup.create(challengeId, "created", { terminal: "pending", winner: null });
+      setup.close();
+
+      const workers = (["hash-a", "hash-b"] as const).map((contender) =>
+        spawnContender(dbPath, challengeId, contender));
+      workers.forEach(({ child }) => children.add(child));
+      await Promise.all(workers.map(({ ready }) => ready));
+      workers.forEach(({ child }) => child.send("go"));
+      const results = await Promise.all(workers.map(({ result }) => result));
+      await Promise.all(workers.map(({ child, stderr }) =>
+        new Promise<void>((resolve, reject) => {
+          if (child.exitCode !== null) return resolve();
+          child.once("exit", (code) =>
+            code === 0 ? resolve() : reject(new Error(`worker exited ${code}: ${stderr()}`)));
+        })));
+      workers.forEach(({ child }) => children.delete(child));
+
+      const successes = results.filter((result) => result.ok);
+      const mismatches = results.filter((result) => !result.ok);
+      assert.equal(successes.length, 1, JSON.stringify(results));
+      assert.equal(successes[0].operationRan, true);
+      assert.equal(successes[0].replayed, false);
+      assert.equal(mismatches.length, 1, JSON.stringify(results));
+      assert.equal(
+        mismatches[0].error,
+        "idempotency key reused with a different request",
+      );
+
+      const restarted = new DurableStore(dbPath);
+      const terminal = restarted.get<{ terminal: string; winner: string }>(
+        challengeId,
+      )!;
+      assert.equal(terminal.version, 1);
+      assert.deepEqual(terminal.value, successes[0].value);
+      assert.equal(terminal.value.winner, successes[0].contender);
+      restarted.close();
+    }
+  } finally {
+    for (const child of children) {
+      if (child.exitCode === null) child.kill();
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("database open waits for an independent process write lock", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "airlock-open-lock-"));
+  const dbPath = join(directory, "locked.sqlite");
+  let holder: ChildProcess | undefined;
+  try {
+    const setup = new DurableStore(dbPath);
+    setup.close();
+
+    holder = spawn(
+      process.execPath,
+      ["--experimental-strip-types", lockHolderPath, dbPath, "350"],
+      { stdio: ["ignore", "ignore", "pipe", "ipc"] },
+    );
+    let errors = "";
+    holder.stderr?.on("data", (chunk) => { errors += chunk.toString(); });
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error(`lock holder did not acquire lock: ${errors}`)),
+        10_000,
+      );
+      holder!.once("error", reject);
+      holder!.on("message", (message: { type?: string }) => {
+        if (message.type === "locked") {
+          clearTimeout(timeout);
+          resolve();
+        }
+      });
+    });
+
+    const started = Date.now();
+    const opened = new DurableStore(dbPath);
+    const elapsed = Date.now() - started;
+    assert.equal(opened.schemaVersion(), 1);
+    opened.close();
+    assert.ok(elapsed >= 200, `open returned before lock release (${elapsed}ms)`);
+    assert.ok(elapsed < 5_000, `open exceeded configured timeout (${elapsed}ms)`);
+
+    await new Promise<void>((resolve, reject) => {
+      if (holder!.exitCode !== null) return resolve();
+      holder!.once("exit", (code) =>
+        code === 0 ? resolve() : reject(new Error(`lock holder exited ${code}: ${errors}`)));
+    });
+  } finally {
+    if (holder?.exitCode === null) holder.kill();
     await rm(directory, { recursive: true, force: true });
   }
 });
