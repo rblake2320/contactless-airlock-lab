@@ -19,6 +19,10 @@ promote simulator behavior into a production payment claim.
 
 ## P1: Durable service
 
+- [x] SQLite durable-store foundation with repeatable migrations, optimistic
+      compare-and-swap, idempotency primitives, and transactional outbox tests
+- [x] Simulator-only browser-lab snapshots survive process restart and reject
+      corrupt, stale-writer, cross-record, and lifecycle-inconsistent state
 - [ ] PostgreSQL durable state and schema migrations
 - [ ] Transactional compare-and-swap challenge consumption
 - [ ] Idempotency records for every external mutation
@@ -35,6 +39,8 @@ promote simulator behavior into a production payment claim.
 - [ ] Processor/network authorization, reversal, clearing, and retry simulator
 - [ ] Wallet/TSP provisioning simulator
 - [ ] Trusted-device web/mobile demonstration using WebAuthn
+- [x] WebAuthn credential-verifier boundary and deterministic negative-path
+      test double, explicitly not integrated with the live lab
 - [ ] Fraud-operations and cardholder activity interfaces
 - [ ] Scenario controls for latency, duplication, outage, and reordering
 - [ ] Exportable evidence bundle for every partner demonstration

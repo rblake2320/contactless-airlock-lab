@@ -1,5 +1,31 @@
 const $ = (id) => document.getElementById(id);
 const short = (value, length = 13) => !value ? "—" : value.length > length ? `${value.slice(0, length)}…` : value;
+const PENDING_KEYS_STORAGE = "airlock.pending-idempotency.v1";
+
+function readPendingKeys() {
+  try {
+    return JSON.parse(globalThis.sessionStorage?.getItem(PENDING_KEYS_STORAGE) ?? "{}");
+  } catch {
+    return {};
+  }
+}
+
+const pendingKeys = readPendingKeys();
+
+function savePendingKeys() {
+  try {
+    globalThis.sessionStorage?.setItem(PENDING_KEYS_STORAGE, JSON.stringify(pendingKeys));
+  } catch {
+    // Storage denial must not prevent the local simulator from operating.
+  }
+}
+
+function idempotencyFor(path, body) {
+  const identity = `${path}\n${JSON.stringify(body ?? {})}`;
+  pendingKeys[identity] ??= globalThis.crypto.randomUUID();
+  savePendingKeys();
+  return { identity, key: pendingKeys[identity] };
+}
 
 function render(state) {
   $("device-state").textContent = state.device?.status ?? "absent";
@@ -60,10 +86,14 @@ function render(state) {
 
 async function action(path, body) {
   document.body.dataset.busy = "true";
+  const idempotency = idempotencyFor(path, body);
   try {
     const response = await fetch(path, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": idempotency.key,
+      },
       body: JSON.stringify(body ?? {}),
     });
     const text = await response.text();
@@ -73,6 +103,8 @@ async function action(path, body) {
     } catch {
       throw new Error(`Server returned an unreadable response (HTTP ${response.status}).`);
     }
+    delete pendingKeys[idempotency.identity];
+    savePendingKeys();
     render(payload.state ?? payload);
   } catch (error) {
     $("connection").textContent = "Connection error";

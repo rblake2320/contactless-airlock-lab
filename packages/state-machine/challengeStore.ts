@@ -22,8 +22,62 @@ export interface CreateChallengeInput {
   ttlMs: number;
 }
 
+export interface ChallengeStoreSnapshot {
+  schemaVersion: 1;
+  records: ChallengeRecord[];
+}
+
 export class ChallengeStore {
   readonly #records = new Map<string, ChallengeRecord>();
+
+  static restore(snapshot: ChallengeStoreSnapshot): ChallengeStore {
+    if (
+      !snapshot ||
+      snapshot.schemaVersion !== 1 ||
+      !Array.isArray(snapshot.records)
+    ) {
+      throw new Error("invalid challenge snapshot");
+    }
+    const store = new ChallengeStore();
+    for (const candidate of snapshot.records) {
+      if (
+        !candidate ||
+        !["created", "confirmed", "expired", "cancelled"].includes(candidate.status) ||
+        !candidate.binding ||
+        typeof candidate.binding.challengeId !== "string" ||
+        !Number.isFinite(Date.parse(candidate.binding.issuedAt)) ||
+        !Number.isFinite(Date.parse(candidate.binding.expiresAt)) ||
+        Date.parse(candidate.binding.expiresAt) <= Date.parse(candidate.binding.issuedAt)
+      ) {
+        throw new Error("invalid challenge snapshot record");
+      }
+      // Canonicalization performs the protocol's exact-field and enum validation.
+      canonicalizeBinding(candidate.binding);
+      if (store.#records.has(candidate.binding.challengeId)) {
+        throw new Error("duplicate challenge in snapshot");
+      }
+      if (
+        (candidate.status === "confirmed" || candidate.status === "cancelled") &&
+        (!candidate.consumedAt || !Number.isFinite(Date.parse(candidate.consumedAt)))
+      ) {
+        throw new Error("terminal challenge missing consumption time");
+      }
+      if (
+        candidate.consumedAt &&
+        Date.parse(candidate.consumedAt) < Date.parse(candidate.binding.issuedAt)
+      ) {
+        throw new Error("challenge consumed before issuance");
+      }
+      if (candidate.status === "created" && candidate.consumedAt !== undefined) {
+        throw new Error("created challenge has consumption time");
+      }
+      store.#records.set(
+        candidate.binding.challengeId,
+        structuredClone(candidate),
+      );
+    }
+    return store;
+  }
 
   create(input: CreateChallengeInput, now = new Date()): ChallengeBinding {
     if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs < 1_000 || input.ttlMs > 300_000) {
@@ -90,5 +144,12 @@ export class ChallengeStore {
   get(challengeId: string): ChallengeRecord | undefined {
     const record = this.#records.get(challengeId);
     return record ? structuredClone(record) : undefined;
+  }
+
+  snapshot(): ChallengeStoreSnapshot {
+    return {
+      schemaVersion: 1,
+      records: structuredClone([...this.#records.values()]),
+    };
   }
 }

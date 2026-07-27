@@ -164,6 +164,15 @@ exported to retention-controlled storage. Logs record decisions and key IDs,
 not private keys, full credentials, biometric material, or sensitive payment
 data unnecessary to the investigation.
 
+The current lab uses an unkeyed SHA-256 hash chain. It detects accidental
+damage and edits whose hashes were not recomputed, but it does not authenticate
+the origin of a complete chain. A writer who controls the SQLite snapshot can
+replace the events and recompute every hash. Therefore the local database is
+inside the simulator trust boundary and the lab must not describe its audit
+chain as immutable or independently authentic. A production design needs an
+append-only external sink plus an HMAC, signature, or signed chain checkpoint
+whose key or trust anchor is not stored beside the database.
+
 ## Required cryptographic properties
 
 - Production device keys are hardware-backed, non-exportable, independently
