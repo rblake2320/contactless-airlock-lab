@@ -1,0 +1,16 @@
+{
+  "name": "contactless-airlock-lab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Reference implementation and partner integration lab for trusted-device payment provisioning and transaction confirmation.",
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "demo": "node --experimental-strip-types tools/demo.ts",
+    "check": "npm test"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}
+
