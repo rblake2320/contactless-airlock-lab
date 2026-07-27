@@ -20,38 +20,70 @@
         <article class="lane">
           <div class="lane-head"><span>01</span><h2>New wallet</h2></div>
           <p>Requests a synthetic payment token. It cannot spend while approval is pending.</p>
-          <button data-action="/api/provision/request">Request provisioning</button>
-          <button class="danger" data-action="/api/provision/attack">Attempt spend before approval</button>
+          <button data-action="/api/provision/request" data-capability="requestProvisioning">Request provisioning</button>
+          <button class="danger" data-action="/api/provision/attack" data-capability="attackProvisioning">Attempt spend before approval</button>
           <dl><div><dt>Request</dt><dd id="request-state">not requested</dd></div><div><dt>Token</dt><dd id="token-state">absent</dd></div></dl>
         </article>
         <article class="lane">
           <div class="lane-head"><span>02</span><h2>Trusted device</h2></div>
           <p>Signs the exact canonical challenge with an enrolled P-256 key.</p>
-          <button data-action="/api/provision/approve">Approve provisioning</button>
-          <button class="danger" data-action="/api/device/revoke">Revoke device</button>
+          <button data-action="/api/provision/approve" data-capability="approveProvisioning">Approve provisioning</button>
+          <button class="danger" data-action="/api/device/revoke" data-capability="revokeDevice">Revoke device</button>
           <dl><div><dt>Device</dt><dd id="device-state">—</dd></div><div><dt>Key</dt><dd id="device-key">—</dd></div></dl>
         </article>
         <article class="lane">
           <div class="lane-head"><span>03</span><h2>Issuer airlock</h2></div>
           <p>Binds the amount and merchant to a one-time confirmation challenge.</p>
           <div class="fields">
-            <label>Amount<input id="amount" inputmode="decimal" value="25.00" aria-label="Transaction amount"></label>
-            <label>Merchant<input id="merchant" value="synthetic-merchant-001" aria-label="Merchant identifier"></label>
+            <label>Amount<input id="amount" inputmode="decimal" value="25.00" aria-label="Transaction amount" autocomplete="off"></label>
+            <label>Merchant<input id="merchant" value="synthetic-merchant-001" aria-label="Merchant identifier" maxlength="64" autocomplete="off"></label>
           </div>
-          <button id="request-transaction">Request transaction</button>
-          <button data-action="/api/transaction/confirm">Confirm exact binding</button>
+          <button id="request-transaction" data-capability="requestTransaction">Request transaction</button>
+          <button data-action="/api/transaction/confirm" data-capability="confirmTransaction">Confirm exact binding</button>
           <dl><div><dt>Transaction</dt><dd id="transaction-state">absent</dd></div><div><dt>Challenge</dt><dd id="challenge-id">—</dd></div></dl>
         </article>
         <article class="lane">
           <div class="lane-head"><span>04</span><h2>Processor boundary</h2></div>
           <p>Models timeout, reversal, and later clearing without claiming settlement prevention.</p>
-          <button class="danger" data-action="/api/transaction/expire">Timeout + reverse</button>
-          <button data-action="/api/transaction/clear">Receive clearing</button>
+          <button class="danger" data-action="/api/transaction/expire" data-capability="expireTransaction">Timeout + reverse</button>
+          <button data-action="/api/transaction/clear" data-capability="receiveClearing">Receive clearing</button>
           <dl><div><dt>Strategy</dt><dd id="strategy">—</dd></div><div><dt>Audit chain</dt><dd id="audit-valid">—</dd></div></dl>
         </article>
       </section>
+      <section class="confirmation" aria-labelledby="confirmation-heading">
+        <div>
+          <p class="eyebrow">Immutable signed payload</p>
+          <h2 id="confirmation-heading">You are confirming</h2>
+          <p>The editable request fields above cannot change this stored challenge.</p>
+        </div>
+        <dl class="binding">
+          <div><dt>Amount</dt><dd id="bound-amount">—</dd></div>
+          <div><dt>Merchant</dt><dd id="bound-merchant">—</dd></div>
+          <div><dt>Token</dt><dd id="bound-token">—</dd></div>
+          <div><dt>Device</dt><dd id="bound-device">—</dd></div>
+          <div><dt>Nonce</dt><dd id="bound-nonce">—</dd></div>
+          <div><dt>Expires</dt><dd id="bound-expiry">—</dd></div>
+        </dl>
+      </section>
+      <section class="attacks" aria-labelledby="attack-heading">
+        <div class="attack-copy">
+          <p class="eyebrow">Negative security demonstrations</p>
+          <h2 id="attack-heading">Try to break the binding</h2>
+          <p>These deliberately submit altered or invalid evidence and must be rejected.</p>
+        </div>
+        <div class="attack-grid">
+          <button class="danger" data-action="/api/demonstrate/altered-amount" data-capability="negativeBinding">Alter amount</button>
+          <button class="danger" data-action="/api/demonstrate/altered-merchant" data-capability="negativeBinding">Alter merchant</button>
+          <button class="danger" data-action="/api/demonstrate/wrong-key" data-capability="negativeBinding">Use wrong key</button>
+          <button class="danger" data-action="/api/demonstrate/wrong-device" data-capability="negativeBinding">Substitute device</button>
+          <button class="danger" data-action="/api/demonstrate/modified-nonce" data-capability="negativeBinding">Modify nonce</button>
+          <button class="danger" data-action="/api/demonstrate/expired-challenge" data-capability="negativeBinding">Expire challenge</button>
+          <button class="danger" data-action="/api/demonstrate/reused-signature" data-capability="negativeBinding">Reuse signature</button>
+          <button class="danger" data-action="/api/demonstrate/audit-tamper">Tamper audit copy</button>
+        </div>
+      </section>
       <section class="evidence">
-        <div class="result">
+        <div class="result" role="status" aria-live="polite" aria-atomic="true">
           <div><p class="eyebrow">Last protocol decision</p><h2 id="result-title">Waiting for state</h2></div>
           <p id="result-message"></p>
           <button class="quiet" data-action="/api/reset">Reset lab</button>
