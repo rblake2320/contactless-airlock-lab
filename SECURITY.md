@@ -96,6 +96,12 @@ limits, and current downstream status are recorded in
 includes the exportable synthetic private key used by persistent demonstrations
 and does not approve the same design for production.
 
+The optional authenticated audit profile, external key/anchor boundary, key
+rotation rules, and integration limits are documented in
+[docs/AUTHENTICATED_AUDIT.md](docs/AUTHENTICATED_AUDIT.md). The legacy browser
+simulator remains an unauthenticated hash-chain demonstration until an external
+key provider and independently stored anchor are explicitly integrated.
+
 The simulator audit log is an unkeyed SHA-256 hash chain. It detects accidental
 damage or mutation when the stored chain tip and prior events remain trusted,
 but it does not authenticate the history against an attacker who can replace

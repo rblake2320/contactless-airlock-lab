@@ -49,6 +49,10 @@ All items below must be complete before proposing a controlled partner pilot.
       transit, tip-adjustment, and late-arrival behavior is explicit.
 - [ ] Backups, point-in-time recovery, disaster recovery, and audit retention
       are exercised rather than documented only.
+- [ ] The authenticated audit profile is wired to an HSM/KMS-backed key
+      provider and independently administered chain-tip anchor with tested
+      atomic publication and crash recovery. Direct profile tests alone do not
+      close this production gate.
 
 ### Application and integration security
 

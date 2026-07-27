@@ -36,6 +36,23 @@ const SYNTHETIC = Object.freeze({
   tokenId: "synthetic-token-001",
 });
 
+export const REALTIME_LAB_API_ROUTES = Object.freeze({
+  health: "/api/health",
+  state: "/api/state",
+  events: "/api/events",
+  reset: "/api/reset",
+  provisionRequest: "/api/provision/request",
+  provisionAttack: "/api/provision/attack",
+  provisionApprove: "/api/provision/approve",
+  deviceRevoke: "/api/device/revoke",
+  transactionRequest: "/api/transaction/request",
+  transactionConfirm: "/api/transaction/confirm",
+  transactionExpire: "/api/transaction/expire",
+  transactionClear: "/api/transaction/clear",
+  auditTamper: "/api/demonstrate/audit-tamper",
+  demonstrationPrefix: "/api/demonstrate/",
+});
+
 interface LabState {
   engine: AirlockEngine;
   keys: DeviceKeyPair;
@@ -422,12 +439,12 @@ function publicSnapshot(state: LabState) {
       revokeDevice: state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
       requestTransaction: Boolean(token && ["active_capped", "active_full"].includes(token.state) &&
         state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active" && !transaction),
-      confirmTransaction: transaction?.state === "confirmation_pending" &&
-        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
-      expireTransaction: transaction?.state === "confirmation_pending",
+      confirmTransaction: Boolean(transaction?.state === "confirmation_pending" &&
+        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active"),
+      expireTransaction: Boolean(transaction?.state === "confirmation_pending"),
       receiveClearing: Boolean(transaction && ["confirmed", "reversed"].includes(transaction.state)),
-      negativeBinding: transaction?.state === "confirmation_pending" &&
-        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
+      negativeBinding: Boolean(transaction?.state === "confirmation_pending" &&
+        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active"),
     },
     audit: { valid: state.engine.audit.verify(), events: state.engine.audit.all() },
     demonstration: state.demonstration,
@@ -643,13 +660,13 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         }
         rollbackSnapshot = snapshotLabState(state);
       }
-      if (req.method === "GET" && url.pathname === "/api/health") {
+      if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.health) {
         return json(res, 200, { ok: true, simulator: true });
       }
-      if (req.method === "GET" && url.pathname === "/api/state") {
+      if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.state) {
         return json(res, 200, publicSnapshot(state));
       }
-      if (req.method === "GET" && url.pathname === "/api/events") {
+      if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.events) {
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-store",
@@ -665,11 +682,11 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/api/reset") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.reset) {
         state = freshState();
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/provision/request") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.provisionRequest) {
         if (state.provisioning) throw new Error("Provisioning was already requested. Reset the lab to start a new request.");
         state.provisioning = state.engine.requestProvisioning({
           subjectId: SYNTHETIC.subjectId,
@@ -681,7 +698,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         succeed("provision.request", "Provisioning challenge issued to the trusted device.");
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/provision/attack") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.provisionAttack) {
         if (!state.provisioning) throw new Error("request provisioning first");
         state.engine.authorize({
           transactionId: `blocked-${crypto.randomUUID()}`,
@@ -693,7 +710,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         });
         throw new Error("unexpected: pending token became spendable");
       }
-      if (req.method === "POST" && url.pathname === "/api/provision/approve") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.provisionApprove) {
         if (!state.provisioning) throw new Error("request provisioning first");
         if (state.provisioning.state !== "trusted_device_challenge") {
           throw new Error("Provisioning is no longer waiting for approval.");
@@ -703,7 +720,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         succeed("provision.approve", "Exact challenge binding signed with the enrolled P-256 key.");
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/device/revoke") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.deviceRevoke) {
         if (state.engine.getDevice(SYNTHETIC.deviceId)?.status !== "active") {
           throw new Error("Trusted device is already revoked.");
         }
@@ -711,7 +728,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         succeed("device.revoke", "Trusted device revoked; outstanding approvals now fail closed.");
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/transaction/request") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionRequest) {
         const body = parseJsonBody(req, requestBody);
         if (state.transaction) throw new Error("A transaction already exists. Reset the lab to start another.");
         state.transaction = state.engine.authorize({
@@ -725,7 +742,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         succeed("transaction.request", "Transaction is pending exact trusted-device confirmation.");
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/transaction/confirm") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionConfirm) {
         if (!state.transaction?.challenge) throw new Error("request a transaction first");
         if (state.transaction.state !== "confirmation_pending") {
           throw new Error("Only a transaction awaiting confirmation can be confirmed.");
@@ -735,7 +752,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         succeed("transaction.confirm", "Amount, merchant, token, device, nonce, and expiry binding verified.");
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/transaction/expire") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionExpire) {
         if (!state.transaction) throw new Error("request a transaction first");
         if (state.transaction.state !== "confirmation_pending") {
           throw new Error("Only a transaction awaiting confirmation can time out.");
@@ -744,7 +761,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         succeed("transaction.expire", "Confirmation timed out; reversal requested and recorded.");
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/transaction/clear") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.transactionClear) {
         if (!state.transaction) throw new Error("request a transaction first");
         if (!["confirmed", "reversed"].includes(state.transaction.state)) {
           throw new Error("Clearing can only follow confirmation or reversal in this demonstration.");
@@ -760,7 +777,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         }
         return finalize(200, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname === "/api/demonstrate/audit-tamper") {
+      if (req.method === "POST" && url.pathname === REALTIME_LAB_API_ROUTES.auditTamper) {
         const tampered = state.engine.audit.all();
         if (!tampered.length) throw new Error("No audit event exists to tamper with.");
         tampered[0].payload = { ...tampered[0].payload, tampered: true };
@@ -785,11 +802,11 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         };
         return finalize(detected ? 200 : 500, publicSnapshot(state));
       }
-      if (req.method === "POST" && url.pathname.startsWith("/api/demonstrate/")) {
+      if (req.method === "POST" && url.pathname.startsWith(REALTIME_LAB_API_ROUTES.demonstrationPrefix)) {
         if (!state.transaction?.challenge || state.transaction.state !== "confirmation_pending") {
           throw new Error("Request a pending transaction before running a binding attack.");
         }
-        const name = url.pathname.slice("/api/demonstrate/".length);
+        const name = url.pathname.slice(REALTIME_LAB_API_ROUTES.demonstrationPrefix.length);
         const original = state.transaction.challenge;
         try {
           if (

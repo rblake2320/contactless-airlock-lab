@@ -35,7 +35,9 @@ promote simulator behavior into a production payment claim.
 - [ ] Transactional outbox and at-least-once event consumers
 - [x] Barrier-driven separate-process SQLite terminal races with restart proof
       for approval/retry, expiry, and cancellation on one host
-- [ ] OpenAPI 3.1 issuer API
+- [x] OpenAPI 3.1 contract for the current simulator-only realtime-lab issuer
+      surface, with executable route, schema, header, and negative drift tests
+- [ ] Production issuer/processor API contract agreed with a partner
 - [ ] AsyncAPI partner event contract
 - [ ] Authentication and signed webhook verification
 - [ ] Structured reason codes and privacy-safe observability
@@ -62,7 +64,11 @@ promote simulator behavior into a production payment claim.
 - [ ] Coverage-guided fuzzing of canonical message decoding and schema validation
 - [ ] Key rotation, revocation, recovery, and compromised-device exercises
 - [ ] Push-fatigue and misleading-transaction UX tests
-- [ ] Caps enforced transactionally across concurrent authorizations
+- [x] Single-host SQLite cap reservations are serialized transactionally across
+      contending OS processes, including partial-write rollback, expiry release,
+      same-key retry, exact replay, aggregate reconciliation, and restart proof
+- [ ] PostgreSQL/multi-host cap enforcement and production-ledger
+      reconciliation across concurrent authorizations
 - [x] Strict TypeScript static checking in the default quality gate
 - [x] Secret-free CI runs tests, scenarios, demo, dependency audit,
       and a narrow committed-credential precheck
