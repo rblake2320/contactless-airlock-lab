@@ -214,6 +214,23 @@ export class DurableStore implements MutationTransaction {
     });
   }
 
+  getIdempotent<T>(
+    scope: string,
+    key: string,
+    requestHash: string,
+  ): T | undefined {
+    const prior = this.#db.prepare(`
+      SELECT request_hash, response_json
+        FROM idempotency_records
+       WHERE scope = ? AND idempotency_key = ?
+    `).get(scope, key);
+    if (!prior) return undefined;
+    if (prior.request_hash !== requestHash) {
+      throw new Error("idempotency key reused with a different request");
+    }
+    return parse<T>(prior.response_json as string);
+  }
+
   enqueue<T>(
     eventKey: string,
     topic: string,

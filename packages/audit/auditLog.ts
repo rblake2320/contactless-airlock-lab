@@ -12,12 +12,50 @@ export interface AuditEvent {
   hash: string;
 }
 
+export interface AuditLogSnapshot {
+  schemaVersion: 1;
+  events: AuditEvent[];
+}
+
 function digest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 export class AuditLog {
   readonly #events: AuditEvent[] = [];
+
+  static restore(snapshot: AuditLogSnapshot): AuditLog {
+    if (
+      !snapshot ||
+      snapshot.schemaVersion !== 1 ||
+      !Array.isArray(snapshot.events)
+    ) {
+      throw new Error("invalid audit snapshot");
+    }
+    const log = new AuditLog();
+    for (const [index, candidate] of snapshot.events.entries()) {
+      if (
+        !candidate ||
+        candidate.sequence !== index + 1 ||
+        typeof candidate.eventId !== "string" ||
+        typeof candidate.type !== "string" ||
+        typeof candidate.correlationId !== "string" ||
+        (candidate.causationId !== undefined && typeof candidate.causationId !== "string") ||
+        typeof candidate.occurredAt !== "string" ||
+        !Number.isFinite(Date.parse(candidate.occurredAt)) ||
+        !candidate.payload ||
+        typeof candidate.payload !== "object" ||
+        Array.isArray(candidate.payload) ||
+        typeof candidate.previousHash !== "string" ||
+        typeof candidate.hash !== "string"
+      ) {
+        throw new Error("invalid audit snapshot event");
+      }
+      log.#events.push(structuredClone(candidate));
+    }
+    if (!log.verify()) throw new Error("audit snapshot chain verification failed");
+    return log;
+  }
 
   append(
     type: string,
@@ -45,6 +83,10 @@ export class AuditLog {
     return structuredClone(this.#events);
   }
 
+  snapshot(): AuditLogSnapshot {
+    return { schemaVersion: 1, events: this.all() };
+  }
+
   verify(): boolean {
     let previousHash = "GENESIS";
     for (const event of this.#events) {
@@ -55,4 +97,3 @@ export class AuditLog {
     return true;
   }
 }
-

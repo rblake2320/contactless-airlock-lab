@@ -3,4 +3,10 @@ coverage/
 dist/
 .env
 *.log
-
+.airlock/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*

@@ -149,6 +149,8 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
     addEventListener: (name: string, handler: () => Promise<void>) => void;
   }>();
   let transactionHandler: (() => Promise<void>) | undefined;
+  let requestHeaders: Record<string, string> | undefined;
+  let uuidCalls = 0;
   const element = (id: string) => {
     if (!elements.has(id)) {
       elements.set(id, {
@@ -178,8 +180,15 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
       querySelectorAll: () => [],
     },
     EventSource: FakeEventSource,
-    fetch: async () => {
+    fetch: async (_path: string, init: { headers: Record<string, string> }) => {
+      requestHeaders = init.headers;
       throw new Error("synthetic connection refusal");
+    },
+    crypto: {
+      randomUUID: () => {
+        uuidCalls += 1;
+        return "00000000-0000-4000-8000-000000000099";
+      },
     },
     console,
   });
@@ -188,4 +197,10 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
   assert.equal(element("connection").textContent, "Connection error");
   assert.equal(element("result-title").textContent, "Network error");
   assert.match(element("result-message").textContent, /did not complete/);
+  assert.equal(
+    requestHeaders?.["idempotency-key"],
+    "00000000-0000-4000-8000-000000000099",
+  );
+  await transactionHandler();
+  assert.equal(uuidCalls, 1, "network retry must reuse the pending request key");
 });
