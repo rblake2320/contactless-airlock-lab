@@ -1,0 +1,295 @@
+{
+  "schemaVersion": "airlock.canonical-vectors.v1",
+  "encoding": "UTF-8 JSON with no insignificant whitespace; properties in protocol order; JSON strings and numbers per RFC 8259",
+  "timestampFormat": "UTC YYYY-MM-DDTHH:mm:ss.sssZ with a real calendar date and year 0001 through 9999",
+  "unicodePolicy": "Unicode scalar values are encoded exactly as supplied; no normalization; unpaired UTF-16 surrogates are rejected",
+  "vectors": [
+    {
+      "id": "provisioning-basic",
+      "valid": true,
+      "binding": {
+        "audience": "airlock-issuer",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "trustedDeviceId": "device-001",
+        "paymentTokenId": "token-001",
+        "accountId": "account-001",
+        "subjectId": "subject-001",
+        "challengeId": "challenge-provision-001",
+        "purpose": "provision-payment-token",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "protocolVersion": "airlock.v1"
+      },
+      "canonicalBase64": "eyJwcm90b2NvbFZlcnNpb24iOiJhaXJsb2NrLnYxIiwicHVycG9zZSI6InByb3Zpc2lvbi1wYXltZW50LXRva2VuIiwiY2hhbGxlbmdlSWQiOiJjaGFsbGVuZ2UtcHJvdmlzaW9uLTAwMSIsInN1YmplY3RJZCI6InN1YmplY3QtMDAxIiwiYWNjb3VudElkIjoiYWNjb3VudC0wMDEiLCJwYXltZW50VG9rZW5JZCI6InRva2VuLTAwMSIsInRydXN0ZWREZXZpY2VJZCI6ImRldmljZS0wMDEiLCJpc3N1ZWRBdCI6IjIwMjYtMDctMjdUMTI6MDA6MDAuMDAwWiIsImV4cGlyZXNBdCI6IjIwMjYtMDctMjdUMTI6MDI6MDAuMDAwWiIsImF1ZGllbmNlIjoiYWlybG9jay1pc3N1ZXIifQ==",
+      "sha256": "2cd329c16771cb7cdafb8fd171c4debaeafdecd351b0a4cd66bda4c49aed9391"
+    },
+    {
+      "id": "transaction-unicode-and-escaping",
+      "valid": true,
+      "binding": {
+        "currency": "EUR",
+        "merchantId": "Café ☕ / 東京 \"lane\"\n2",
+        "transactionId": "txn\\unicode",
+        "amountMinor": 12345,
+        "audience": "airlock-issuer",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "trustedDeviceId": "device-ü",
+        "paymentTokenId": "token-東京",
+        "accountId": "account/42",
+        "subjectId": "subject-é",
+        "challengeId": "challenge-unicode",
+        "purpose": "confirm-transaction",
+        "protocolVersion": "airlock.v1"
+      },
+      "canonicalBase64": "eyJwcm90b2NvbFZlcnNpb24iOiJhaXJsb2NrLnYxIiwicHVycG9zZSI6ImNvbmZpcm0tdHJhbnNhY3Rpb24iLCJjaGFsbGVuZ2VJZCI6ImNoYWxsZW5nZS11bmljb2RlIiwic3ViamVjdElkIjoic3ViamVjdC3DqSIsImFjY291bnRJZCI6ImFjY291bnQvNDIiLCJwYXltZW50VG9rZW5JZCI6InRva2VuLeadseS6rCIsInRydXN0ZWREZXZpY2VJZCI6ImRldmljZS3DvCIsInRyYW5zYWN0aW9uSWQiOiJ0eG5cXHVuaWNvZGUiLCJtZXJjaGFudElkIjoiQ2Fmw6kg4piVIC8g5p2x5LqsIFwibGFuZVwiXG4yIiwiYW1vdW50TWlub3IiOjEyMzQ1LCJjdXJyZW5jeSI6IkVVUiIsImlzc3VlZEF0IjoiMjAyNi0wNy0yN1QxMjowMDowMC4wMDBaIiwiZXhwaXJlc0F0IjoiMjAyNi0wNy0yN1QxMjowMDozMC4wMDBaIiwiYXVkaWVuY2UiOiJhaXJsb2NrLWlzc3VlciJ9",
+      "sha256": "4f47706553d85b0cccac8544fb00c3fe0c7f88d7fa2afadd23c827fb11876d42"
+    },
+    {
+      "id": "transaction-max-safe-integer",
+      "valid": true,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "challenge-max",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction-max",
+        "merchantId": "merchant",
+        "amountMinor": 9007199254740991,
+        "currency": "USD",
+        "issuedAt": "2026-12-31T23:59:58.000Z",
+        "expiresAt": "2026-12-31T23:59:59.999Z",
+        "audience": "airlock-issuer"
+      },
+      "canonicalBase64": "eyJwcm90b2NvbFZlcnNpb24iOiJhaXJsb2NrLnYxIiwicHVycG9zZSI6ImNvbmZpcm0tdHJhbnNhY3Rpb24iLCJjaGFsbGVuZ2VJZCI6ImNoYWxsZW5nZS1tYXgiLCJzdWJqZWN0SWQiOiJzdWJqZWN0IiwiYWNjb3VudElkIjoiYWNjb3VudCIsInBheW1lbnRUb2tlbklkIjoidG9rZW4iLCJ0cnVzdGVkRGV2aWNlSWQiOiJkZXZpY2UiLCJ0cmFuc2FjdGlvbklkIjoidHJhbnNhY3Rpb24tbWF4IiwibWVyY2hhbnRJZCI6Im1lcmNoYW50IiwiYW1vdW50TWlub3IiOjkwMDcxOTkyNTQ3NDA5OTEsImN1cnJlbmN5IjoiVVNEIiwiaXNzdWVkQXQiOiIyMDI2LTEyLTMxVDIzOjU5OjU4LjAwMFoiLCJleHBpcmVzQXQiOiIyMDI2LTEyLTMxVDIzOjU5OjU5Ljk5OVoiLCJhdWRpZW5jZSI6ImFpcmxvY2staXNzdWVyIn0=",
+      "sha256": "188f3e301b0c08c62083c35dd467b274035d9bfa1755a246410caeae97cabbd8"
+    },
+    {
+      "id": "unknown-field",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "invalid-extra",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "audience": "airlock-issuer",
+        "approval": true
+      },
+      "errorCode": "UNKNOWN_FIELD"
+    },
+    {
+      "id": "unknown-purpose-enum",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "approve-everything",
+        "challengeId": "invalid-purpose",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "UNSUPPORTED_PURPOSE"
+    },
+    {
+      "id": "unknown-currency-enum",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "invalid-currency",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction",
+        "merchantId": "merchant",
+        "amountMinor": 100,
+        "currency": "ZZZ",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "UNSUPPORTED_CURRENCY"
+    },
+    {
+      "id": "fractional-amount",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "invalid-fraction",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction",
+        "merchantId": "merchant",
+        "amountMinor": 10.5,
+        "currency": "USD",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_AMOUNT"
+    },
+    {
+      "id": "unsafe-integer-amount",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "invalid-unsafe",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction",
+        "merchantId": "merchant",
+        "amountMinor": 9007199254740992,
+        "currency": "USD",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_AMOUNT"
+    },
+    {
+      "id": "numeric-string-amount",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "invalid-string-amount",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction",
+        "merchantId": "merchant",
+        "amountMinor": "100",
+        "currency": "USD",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_AMOUNT"
+    },
+    {
+      "id": "numeric-subject-id",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "invalid-subject",
+        "subjectId": 42,
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_FIELD"
+    },
+    {
+      "id": "noncanonical-timestamp-offset",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "invalid-offset",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-07-27T07:00:00-05:00",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_TIMESTAMP"
+    },
+    {
+      "id": "nonexistent-calendar-date",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "invalid-calendar",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-02-30T12:00:00.000Z",
+        "expiresAt": "2026-03-01T12:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_TIMESTAMP"
+    },
+    {
+      "id": "year-zero",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "invalid-year",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "0000-01-01T00:00:00.000Z",
+        "expiresAt": "0000-01-01T00:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_TIMESTAMP"
+    },
+    {
+      "id": "boolean-amount",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "confirm-transaction",
+        "challengeId": "invalid-boolean",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "transactionId": "transaction",
+        "merchantId": "merchant",
+        "amountMinor": true,
+        "currency": "USD",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:00:30.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_AMOUNT"
+    },
+    {
+      "id": "unpaired-surrogate",
+      "valid": false,
+      "binding": {
+        "protocolVersion": "airlock.v1",
+        "purpose": "provision-payment-token",
+        "challengeId": "invalid-\ud800",
+        "subjectId": "subject",
+        "accountId": "account",
+        "paymentTokenId": "token",
+        "trustedDeviceId": "device",
+        "issuedAt": "2026-07-27T12:00:00.000Z",
+        "expiresAt": "2026-07-27T12:02:00.000Z",
+        "audience": "airlock-issuer"
+      },
+      "errorCode": "INVALID_FIELD"
+    }
+  ]
+}

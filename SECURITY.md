@@ -91,11 +91,14 @@ not evidence of PCI compliance, network certification, regulatory approval, or
 production authorization.
 
 The repository CI performs strict TypeScript checking, executable lab checks,
-a dependency vulnerability audit, and a narrow obvious-credential
-precheck without requiring secrets. These controls are baseline hygiene, not a
-replacement for dedicated SAST, full-history secret scanning, dependency
-review, SBOM/provenance generation, container scanning, penetration testing, or
-partner security assessment. See
+a dependency vulnerability audit, an obvious-credential precheck, full-history
+Gitleaks scanning, CodeQL JavaScript/TypeScript analysis, and CycloneDX SBOM
+generation without repository secrets. Third-party and GitHub actions are
+pinned to reviewed commit SHAs. These controls are baseline hygiene, not a
+replacement for dependency-review policy, artifact attestation, signed-build
+provenance, penetration testing, independent workflow/action review, or partner
+security assessment. There is no deployable container in this repository, so
+the workflow does not pretend to perform container scanning. See
 [docs/PRODUCTION_READINESS.md](docs/PRODUCTION_READINESS.md) for the closure
 gate.
 
