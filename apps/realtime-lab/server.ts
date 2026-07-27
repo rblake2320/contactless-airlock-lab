@@ -19,13 +19,25 @@ interface LabState {
   keys: DeviceKeyPair;
   provisioning?: ProvisioningRequest;
   transaction?: TransactionRecord;
-  demonstration?: { name: string; blocked: boolean; message: string };
-  lastResult: { ok: boolean; action: string; message: string; at: string };
+  demonstration?: {
+    name: string;
+    blocked: boolean;
+    message: string;
+    auditCopyValid?: boolean;
+  };
+  lastResult: {
+    ok: boolean;
+    outcome: "accepted" | "blocked" | "warning";
+    action: string;
+    message: string;
+    at: string;
+  };
 }
 
 function parseAmountMinor(value: unknown): number {
   if (typeof value !== "string") throw new Error("Amount is required in decimal form, for example 25.00.");
   const input = value.trim();
+  if (/^-\d+(?:\.\d+)?$/.test(input)) throw new Error("Amount must be greater than zero.");
   const match = /^(0|[1-9]\d*)(?:\.(\d{1,2}))?$/.exec(input);
   if (!match) throw new Error("Amount must be a finite decimal with no more than two fractional digits.");
   const fraction = (match[2] ?? "").padEnd(2, "0");
@@ -65,6 +77,7 @@ function freshState(): LabState {
     keys,
     lastResult: {
       ok: true,
+      outcome: "accepted",
       action: "reset",
       message: "Synthetic trusted device enrolled. No payment network was contacted.",
       at: new Date().toISOString(),
@@ -101,10 +114,12 @@ function publicSnapshot(state: LabState) {
       revokeDevice: state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
       requestTransaction: Boolean(token && ["active_capped", "active_full"].includes(token.state) &&
         state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active" && !transaction),
-      confirmTransaction: transaction?.state === "confirmation_pending",
+      confirmTransaction: transaction?.state === "confirmation_pending" &&
+        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
       expireTransaction: transaction?.state === "confirmation_pending",
       receiveClearing: Boolean(transaction && ["confirmed", "reversed"].includes(transaction.state)),
-      negativeBinding: transaction?.state === "confirmation_pending",
+      negativeBinding: transaction?.state === "confirmation_pending" &&
+        state.engine.getDevice(SYNTHETIC.deviceId)?.status === "active",
     },
     audit: { valid: state.engine.audit.verify(), events: state.engine.audit.all() },
     demonstration: state.demonstration,
@@ -141,7 +156,23 @@ export function createLabServer() {
     for (const listener of listeners) listener.write(payload);
   };
   const succeed = (action: string, message: string) => {
-    state.lastResult = { ok: true, action, message, at: new Date().toISOString() };
+    state.lastResult = {
+      ok: true,
+      outcome: "accepted",
+      action,
+      message,
+      at: new Date().toISOString(),
+    };
+    broadcast();
+  };
+  const warn = (action: string, message: string) => {
+    state.lastResult = {
+      ok: false,
+      outcome: "warning",
+      action,
+      message,
+      at: new Date().toISOString(),
+    };
     broadcast();
   };
 
@@ -256,7 +287,14 @@ export function createLabServer() {
           throw new Error("Clearing can only follow confirmation or reversal in this demonstration.");
         }
         state.transaction = state.engine.receiveClearing(state.transaction.transactionId);
-        succeed("transaction.clear", "Synthetic clearing received; final state follows the state machine.");
+        if (state.transaction.state === "exception") {
+          warn(
+            "transaction.clear.exception",
+            "Exception detected: clearing arrived after reversal. Partner reconciliation is required; settlement prevention is not claimed.",
+          );
+        } else {
+          succeed("transaction.clear", "Synthetic clearing received; transaction settled.");
+        }
         return json(res, 200, publicSnapshot(state));
       }
       if (req.method === "POST" && url.pathname === "/api/demonstrate/audit-tamper") {
@@ -268,11 +306,18 @@ export function createLabServer() {
           name: "audit-tamper",
           blocked: detected,
           message: detected ? "Modified audit payload invalidated the hash chain." : "Tampering was not detected.",
+          auditCopyValid: !detected,
         };
+        state.engine.audit.append("security.attack_blocked", "audit-copy", {
+          attack: "audit-tamper",
+          reason: state.demonstration.message,
+          authoritativeAuditModified: false,
+        });
         state.lastResult = {
-          ok: detected,
+          ok: false,
+          outcome: "blocked",
           action: "demonstrate.audit-tamper",
-          message: state.demonstration.message,
+          message: `Attack blocked: ${state.demonstration.message} The authoritative audit remains valid.`,
           at: new Date().toISOString(),
         };
         broadcast();
@@ -319,9 +364,14 @@ export function createLabServer() {
           if (name === "expired-challenge" && state.transaction.state === "confirmation_pending") {
             state.transaction = state.engine.expireAndReverse(state.transaction.transactionId);
           }
+          state.engine.audit.append("security.attack_blocked", state.transaction.transactionId, {
+            attack: name,
+            reason: message,
+          });
           state.demonstration = { name, blocked: true, message };
           state.lastResult = {
             ok: false,
+            outcome: "blocked",
             action: `demonstrate.${name}`,
             message: `Attack blocked: ${message}`,
             at: new Date().toISOString(),
@@ -352,7 +402,13 @@ export function createLabServer() {
       return json(res, 404, { error: "not found" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
-      state.lastResult = { ok: false, action: "blocked", message, at: new Date().toISOString() };
+      state.lastResult = {
+        ok: false,
+        outcome: "blocked",
+        action: "blocked",
+        message,
+        at: new Date().toISOString(),
+      };
       broadcast();
       return json(res, 409, { error: message, state: publicSnapshot(state) });
     }

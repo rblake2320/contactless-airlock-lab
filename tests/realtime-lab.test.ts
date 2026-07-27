@@ -98,7 +98,50 @@ test("real-time lab exposes immutable confirmation data and blocks binding attac
     const tamper = await post(baseUrl, "/api/demonstrate/audit-tamper");
     assert.equal(tamper.response.status, 200);
     assert.equal(tamper.payload.demonstration.blocked, true);
+    assert.equal(tamper.payload.demonstration.auditCopyValid, false);
+    assert.equal(tamper.payload.lastResult.outcome, "blocked");
     assert.equal(tamper.payload.audit.valid, true, "the authoritative audit log must remain untouched");
+    assert.equal(tamper.payload.audit.events.at(-1).type, "security.attack_blocked");
+  });
+});
+
+test("negative amounts get a range-specific error and long merchants are not truncated", async () => {
+  await withLab(async (baseUrl) => {
+    await post(baseUrl, "/api/provision/request");
+    await post(baseUrl, "/api/provision/approve");
+    const negative = await post(baseUrl, "/api/transaction/request", {
+      amount: "-50",
+      merchantId: "merchant-A",
+    });
+    assert.equal(negative.response.status, 409);
+    assert.match(negative.payload.error, /greater than zero/);
+
+    const longMerchant = "m".repeat(65);
+    const long = await post(baseUrl, "/api/transaction/request", {
+      amount: "25.00",
+      merchantId: longMerchant,
+    });
+    assert.equal(long.response.status, 409);
+    assert.match(long.payload.error, /1–64/);
+    assert.equal(long.payload.state.transaction, undefined);
+  });
+});
+
+test("late clearing after reversal is an explicit warning and security attacks are audited", async () => {
+  await withLab(async (baseUrl) => {
+    await post(baseUrl, "/api/provision/request");
+    await post(baseUrl, "/api/provision/approve");
+    await post(baseUrl, "/api/transaction/request", { amount: "25.00", merchantId: "merchant-A" });
+    const attack = await post(baseUrl, "/api/demonstrate/altered-merchant");
+    assert.equal(attack.payload.audit.events.at(-1).type, "security.attack_blocked");
+
+    await post(baseUrl, "/api/transaction/expire");
+    const clearing = await post(baseUrl, "/api/transaction/clear");
+    assert.equal(clearing.response.status, 200);
+    assert.equal(clearing.payload.transaction.state, "exception");
+    assert.equal(clearing.payload.lastResult.outcome, "warning");
+    assert.match(clearing.payload.lastResult.message, /reconciliation/);
+    assert.equal(clearing.payload.actions.receiveClearing, false);
   });
 });
 

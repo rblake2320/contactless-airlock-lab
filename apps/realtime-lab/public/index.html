@@ -36,7 +36,7 @@
           <p>Binds the amount and merchant to a one-time confirmation challenge.</p>
           <div class="fields">
             <label>Amount<input id="amount" inputmode="decimal" value="25.00" aria-label="Transaction amount" autocomplete="off"></label>
-            <label>Merchant<input id="merchant" value="synthetic-merchant-001" aria-label="Merchant identifier" maxlength="64" autocomplete="off"></label>
+            <label>Merchant<input id="merchant" value="synthetic-merchant-001" aria-label="Merchant identifier" aria-describedby="merchant-help" autocomplete="off"><small id="merchant-help">1–64 allowed characters; invalid input is rejected, never truncated.</small></label>
           </div>
           <button id="request-transaction" data-capability="requestTransaction">Request transaction</button>
           <button data-action="/api/transaction/confirm" data-capability="confirmTransaction">Confirm exact binding</button>
@@ -46,8 +46,8 @@
           <div class="lane-head"><span>04</span><h2>Processor boundary</h2></div>
           <p>Models timeout, reversal, and later clearing without claiming settlement prevention.</p>
           <button class="danger" data-action="/api/transaction/expire" data-capability="expireTransaction">Timeout + reverse</button>
-          <button data-action="/api/transaction/clear" data-capability="receiveClearing">Receive clearing</button>
-          <dl><div><dt>Strategy</dt><dd id="strategy">—</dd></div><div><dt>Audit chain</dt><dd id="audit-valid">—</dd></div></dl>
+          <button data-action="/api/transaction/clear" data-capability="receiveClearing">Receive clearing / simulate late clearing</button>
+          <dl><div><dt>Strategy</dt><dd id="strategy">—</dd></div><div><dt>Authoritative audit</dt><dd id="audit-valid">—</dd></div><div><dt>Tampered copy</dt><dd id="audit-copy-valid">not tested</dd></div></dl>
         </article>
       </section>
       <section class="confirmation" aria-labelledby="confirmation-heading">

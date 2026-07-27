@@ -22,8 +22,21 @@ function render(state) {
     : "—";
   $("audit-valid").textContent = state.audit.valid ? "valid" : "INVALID";
   $("audit-valid").dataset.tone = state.audit.valid ? "good" : "bad";
-  $("result-title").textContent = state.lastResult.ok ? "Accepted" : "Blocked";
-  $("result-title").dataset.tone = state.lastResult.ok ? "good" : "bad";
+  const outcome = state.lastResult.outcome ?? (state.lastResult.ok ? "accepted" : "blocked");
+  $("result-title").textContent = outcome === "accepted"
+    ? "Accepted"
+    : outcome === "warning"
+      ? "Exception"
+      : "Blocked";
+  $("result-title").dataset.tone = outcome === "accepted"
+    ? "good"
+    : outcome === "warning"
+      ? "warning"
+      : "bad";
+  $("audit-copy-valid").textContent = state.demonstration?.name === "audit-tamper"
+    ? state.demonstration.auditCopyValid ? "unexpectedly valid" : "INVALID — tampering detected"
+    : "not tested";
+  $("audit-copy-valid").dataset.tone = state.demonstration?.name === "audit-tamper" ? "bad" : "";
   $("result-message").textContent = state.lastResult.message;
   $("event-count").textContent = `${state.audit.events.length} event${state.audit.events.length === 1 ? "" : "s"}`;
   $("events").replaceChildren(...state.audit.events.slice().reverse().map((event) => {
