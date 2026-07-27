@@ -99,6 +99,17 @@ test("unknown signed fields are rejected instead of silently omitted", () => {
   assert.equal(store.get(binding.challengeId)?.status, "created");
 });
 
+test("cancelled challenge cannot later be consumed", () => {
+  const { keys, store, binding } = fixture();
+  store.cancel(binding.challengeId, new Date("2026-07-27T10:00:00.500Z"));
+  assert.equal(store.get(binding.challengeId)?.status, "cancelled");
+  const approval = signApproval(binding, keys.keyId, keys.privateKeyPem);
+  assert.throws(
+    () => store.consume(approval, keys.publicKeyPem),
+    /already terminal/,
+  );
+});
+
 test("invalid challenge TTL is rejected at runtime", () => {
   const store = new ChallengeStore();
   assert.throws(

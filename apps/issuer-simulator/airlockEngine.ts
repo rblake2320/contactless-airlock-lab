@@ -80,6 +80,23 @@ export class AirlockEngine {
     return structuredClone(device);
   }
 
+  getDevice(deviceId: string): TrustedDevice | undefined {
+    const value = this.#devices.get(deviceId);
+    return value ? structuredClone(value) : undefined;
+  }
+
+  revokeTrustedDevice(deviceId: string, now = new Date()): TrustedDevice {
+    const device = this.#must(this.#devices, deviceId, "trusted device");
+    if (device.status === "revoked") throw new Error("trusted device already revoked");
+    device.status = "revoked";
+    this.audit.append("trusted_device.revoked", deviceId, {
+      deviceId,
+      subjectId: device.subjectId,
+      keyId: device.keyId,
+    }, now);
+    return structuredClone(device);
+  }
+
   requestProvisioning(input: {
     subjectId: string;
     accountId: string;

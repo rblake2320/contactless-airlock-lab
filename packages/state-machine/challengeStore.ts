@@ -78,6 +78,15 @@ export class ChallengeStore {
     return structuredClone(record);
   }
 
+  cancel(challengeId: string, now = new Date()): ChallengeRecord {
+    const record = this.#records.get(challengeId);
+    if (!record) throw new Error("unknown challenge");
+    if (record.status !== "created") throw new Error("challenge already terminal");
+    record.status = "cancelled";
+    record.consumedAt = now.toISOString();
+    return structuredClone(record);
+  }
+
   get(challengeId: string): ChallengeRecord | undefined {
     const record = this.#records.get(challengeId);
     return record ? structuredClone(record) : undefined;
