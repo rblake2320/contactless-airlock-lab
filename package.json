@@ -7,10 +7,10 @@
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "demo": "node --experimental-strip-types tools/demo.ts",
-    "check": "npm test"
+    "scenarios": "node --experimental-strip-types tools/scenarios.ts",
+    "check": "npm test && npm run scenarios"
   },
   "engines": {
     "node": ">=22.6"
   }
 }
-
