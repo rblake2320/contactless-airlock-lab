@@ -11,7 +11,8 @@
     "lab": "node --experimental-strip-types apps/realtime-lab/server.ts",
     "scenarios": "node --experimental-strip-types tools/scenarios.ts",
     "release:evidence": "node --experimental-strip-types tools/release-evidence.ts",
-    "check": "npm run typecheck && npm test && npm run scenarios",
+    "guard:boundaries": "node scripts/no-test-verifier-in-prod.mjs",
+    "check": "npm run typecheck && npm run guard:boundaries && npm test && npm run scenarios",
     "security:audit": "npm audit --audit-level=high"
   },
   "engines": {

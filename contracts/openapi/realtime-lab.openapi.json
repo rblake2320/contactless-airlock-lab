@@ -70,7 +70,8 @@
                 }
               }
             }
-          }
+          },
+          "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
     },
@@ -92,7 +93,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -114,7 +115,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -136,7 +137,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -158,7 +159,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -180,7 +181,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -209,7 +210,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -228,7 +229,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -247,7 +248,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -266,7 +267,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -290,7 +291,7 @@
           "428": { "$ref": "#/components/responses/SimpleError" },
           "431": { "$ref": "#/components/responses/SimpleError" },
           "500": { "$ref": "#/components/responses/StateResponse" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     },
@@ -326,7 +327,7 @@
           "403": { "$ref": "#/components/responses/SimpleError" }, "409": { "$ref": "#/components/responses/ConflictError" },
           "413": { "$ref": "#/components/responses/SimpleError" }, "415": { "$ref": "#/components/responses/SimpleError" },
           "428": { "$ref": "#/components/responses/SimpleError" }, "431": { "$ref": "#/components/responses/SimpleError" },
-          "503": { "$ref": "#/components/responses/StateError" }
+          "429": { "$ref": "#/components/responses/RateLimited" }, "503": { "$ref": "#/components/responses/StateError" }
         }
       }
     }
@@ -407,6 +408,21 @@
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/StateError" }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Per-client mutation rate limit exceeded (SIMULATOR: in-process single-instance limiter; distributed/edge enforcement is external). No state mutation occurred.",
+        "headers": {
+          "Retry-After": {
+            "description": "Whole seconds the client should wait before retrying.",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/SimpleError" }
           }
         }
       }
@@ -708,7 +724,7 @@
           "UNKNOWN_DEMONSTRATION", "CHALLENGE_BINDING_MISMATCH",
           "CHALLENGE_EXPIRED", "CHALLENGE_TERMINAL", "DEVICE_KEY_MISMATCH",
           "DEVICE_NOT_ACTIVE", "INVALID_STATE_TRANSITION", "CAP_EXCEEDED",
-          "DOMAIN_REJECTED", "INTERNAL_ERROR"
+          "DOMAIN_REJECTED", "INTERNAL_ERROR", "RATE_LIMITED"
         ]
       },
       "PublicState": {

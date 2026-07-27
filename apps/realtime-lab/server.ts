@@ -57,9 +57,211 @@ export const REASON_CODES = [
   "UNKNOWN_DEMONSTRATION", "CHALLENGE_BINDING_MISMATCH",
   "CHALLENGE_EXPIRED", "CHALLENGE_TERMINAL", "DEVICE_KEY_MISMATCH",
   "DEVICE_NOT_ACTIVE", "INVALID_STATE_TRANSITION", "CAP_EXCEEDED",
-  "DOMAIN_REJECTED", "INTERNAL_ERROR",
+  "DOMAIN_REJECTED", "INTERNAL_ERROR", "RATE_LIMITED",
 ] as const;
 export type ReasonCode = typeof REASON_CODES[number];
+
+// ---- Per-client mutation rate limiting (in-process, single-instance only) ----
+// SCOPE: a local abuse control for ONE simulator process. NOT distributed or
+// production enforcement — horizontal scaling, edge/CDN throttling, and
+// shared-state limiting (Redis, API gateway) are explicitly left EXTERNAL.
+// See docs/REALTIME_LAB_RATE_LIMIT.md.
+export interface RateLimitConfig {
+  /** Bucket capacity = maximum burst of mutations a client may make at once. */
+  capacity: number;
+  /** Sustained refill rate in tokens per second. */
+  refillPerSecond: number;
+  /** Hard cap on tracked client buckets (memory bound); LRU-evicted past it. */
+  maxClients: number;
+}
+
+const DEFAULT_RATE_LIMIT: RateLimitConfig = Object.freeze({
+  // Generous defaults: invisible to functional use, still a real abuse ceiling.
+  capacity: 300,
+  refillPerSecond: 150,
+  maxClients: 10_000,
+});
+
+// ---- SSE connection bounding (in-process, single-instance only) ----
+// Long-lived `GET /api/events` streams each pin a socket and a heartbeat timer.
+// Without a bound, one client can open unbounded streams and exhaust sockets/
+// memory. These caps are per-process; distributed/edge connection limits remain
+// external. See docs/REALTIME_LAB_RATE_LIMIT.md.
+export interface SseLimitConfig {
+  /** Max concurrent event streams from a single client identity. */
+  maxPerClient: number;
+  /** Max concurrent event streams across all clients. */
+  maxTotal: number;
+}
+
+const DEFAULT_SSE_LIMIT: SseLimitConfig = Object.freeze({
+  maxPerClient: 4,
+  maxTotal: 64,
+});
+
+// Heartbeat comment interval for SSE keep-alive (ms). Overridable for tests.
+const DEFAULT_SSE_HEARTBEAT_MS = 15_000;
+
+interface Bucket {
+  tokens: number;
+  updatedMs: number;
+}
+
+export interface RateLimitDecision {
+  allowed: boolean;
+  /** Seconds until a token frees (>=1); only meaningful when blocked. */
+  retryAfterSeconds: number;
+}
+
+/**
+ * Token-bucket limiter keyed by client identity. Deterministic under an injected
+ * clock. Backed by a Map used as an LRU (re-insertion moves a key to the tail;
+ * eviction drops the head) so memory is bounded by `maxClients`.
+ */
+export class MutationRateLimiter {
+  readonly #buckets = new Map<string, Bucket>();
+  readonly #config: RateLimitConfig;
+  readonly #clock: () => number;
+
+  constructor(config: RateLimitConfig, clock: () => number) {
+    if (
+      !Number.isFinite(config.capacity) || config.capacity < 1 ||
+      !Number.isFinite(config.refillPerSecond) || config.refillPerSecond <= 0 ||
+      !Number.isInteger(config.maxClients) || config.maxClients < 1
+    ) {
+      throw new Error("invalid rate-limit configuration");
+    }
+    this.#config = config;
+    this.#clock = clock;
+  }
+
+  #admissionRejections = 0;
+
+  /** Synchronously (atomically) attempt to consume one token for `clientKey`. */
+  take(clientKey: string): RateLimitDecision {
+    const now = this.#clock();
+    const { capacity, refillPerSecond, maxClients } = this.#config;
+    const existing = this.#buckets.get(clientKey);
+
+    // New client at capacity: apply bounded, fail-closed admission control that
+    // NEVER refunds tokens to a penalized bucket. Evicting a bucket that has
+    // spent tokens and re-creating it fresh (full capacity) would let attacker-
+    // controlled identity churn wipe a victim's active penalty. So we only evict
+    // a fully-refilled bucket; if none exists, we reject the NEW identity without
+    // allocating (the table never grows past maxClients and no penalty is lost).
+    if (!existing && this.#buckets.size >= maxClients) {
+      const evictable = this.#findEvictableFullBucket(now);
+      if (evictable === undefined) {
+        this.#admissionRejections += 1;
+        return {
+          allowed: false,
+          retryAfterSeconds: Math.max(1, Math.ceil(1 / refillPerSecond)),
+        };
+      }
+      this.#buckets.delete(evictable);
+    }
+
+    // Refresh LRU position: delete now, re-insert at tail below.
+    if (existing) this.#buckets.delete(clientKey);
+    const bucket: Bucket = existing ?? { tokens: capacity, updatedMs: now };
+    const elapsedSec = Math.max(0, (now - bucket.updatedMs) / 1000);
+    bucket.tokens = Math.min(capacity, bucket.tokens + elapsedSec * refillPerSecond);
+    bucket.updatedMs = now;
+
+    let decision: RateLimitDecision;
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      decision = { allowed: true, retryAfterSeconds: 0 };
+    } else {
+      const deficit = 1 - bucket.tokens;
+      decision = {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil(deficit / refillPerSecond)),
+      };
+    }
+    this.#buckets.set(clientKey, bucket);
+    return decision;
+  }
+
+  /**
+   * Oldest-first scan (Map iteration order = insertion/LRU order) for a bucket
+   * that has fully refilled at `now`. Such a bucket carries no penalty, so
+   * evicting it and letting the owner re-create it later is a no-op — safe.
+   * A partially-drained ("penalized") bucket is never returned, so churn cannot
+   * refund it. Returns the client key to evict, or undefined if none is safe.
+   */
+  #findEvictableFullBucket(now: number): string | undefined {
+    const { capacity, refillPerSecond } = this.#config;
+    for (const [key, bucket] of this.#buckets) {
+      const elapsedSec = Math.max(0, (now - bucket.updatedMs) / 1000);
+      const refilled = Math.min(capacity, bucket.tokens + elapsedSec * refillPerSecond);
+      if (refilled >= capacity) return key;
+    }
+    return undefined;
+  }
+
+  /** Introspection helper: number of tracked client buckets. */
+  get trackedClients(): number {
+    return this.#buckets.size;
+  }
+
+  /** Introspection helper: count of new identities refused by admission control. */
+  get admissionRejections(): number {
+    return this.#admissionRejections;
+  }
+}
+
+/** Normalize an IP: strip IPv6 zone id, unwrap v4-mapped IPv6, lowercase. */
+function normalizeIp(raw: string): string {
+  let ip = raw.trim().toLowerCase();
+  if (!ip) return "";
+  const zone = ip.indexOf("%");
+  if (zone >= 0) ip = ip.slice(0, zone);
+  if (ip.startsWith("::ffff:") && ip.includes(".")) ip = ip.slice("::ffff:".length);
+  return ip;
+}
+
+/** Bucket key for an address: IPv4 -> exact; IPv6 -> /64 prefix (first 4 groups). */
+function addressBucketKey(ip: string): string {
+  if (!ip) return "unknown";
+  if (ip.includes(":")) {
+    const [head, tail = ""] = ip.split("::", 2);
+    const headGroups = head ? head.split(":") : [];
+    const tailGroups = tail ? tail.split(":") : [];
+    const missing = 8 - headGroups.length - tailGroups.length;
+    const groups = ip.includes("::")
+      ? [...headGroups, ...Array(Math.max(0, missing)).fill("0"), ...tailGroups]
+      : ip.split(":");
+    return "v6:" + groups.slice(0, 4).map((g) => g || "0").join(":") + "::/64";
+  }
+  return "v4:" + ip;
+}
+
+/**
+ * Resolve the client identity used for rate limiting. Forwarding headers are
+ * trusted ONLY when the direct socket peer is in `trustedProxies`; otherwise a
+ * spoofed X-Forwarded-For is ignored and the real peer address is used. With a
+ * trusted proxy present we take the right-most chain address that is not itself
+ * a trusted proxy (the client as seen by the outermost trusted hop).
+ */
+function resolveClientKey(
+  req: IncomingMessage,
+  trustedProxies: ReadonlySet<string>,
+): string {
+  const peer = normalizeIp(req.socket?.remoteAddress ?? "");
+  if (trustedProxies.size === 0 || !trustedProxies.has(peer)) {
+    return addressBucketKey(peer);
+  }
+  const forwarded = req.headers["x-forwarded-for"];
+  const header = Array.isArray(forwarded) ? forwarded.join(",") : forwarded;
+  if (typeof header === "string" && header.length > 0) {
+    const chain = header.split(",").map((part) => normalizeIp(part)).filter(Boolean);
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      if (!trustedProxies.has(chain[i])) return addressBucketKey(chain[i]);
+    }
+  }
+  return addressBucketKey(peer);
+}
 
 export const REALTIME_LAB_API_ROUTES = Object.freeze({
   health: "/api/health",
@@ -132,6 +334,28 @@ export interface CreateLabServerOptions {
   faultInjector?: (action: string) => void;
   /** Test-only verifier substitution for exercising the fail-closed invariant. */
   auditCopyVerifier?: typeof verifyAuditCopy;
+  /**
+   * Per-client mutation rate limit. Omit for the generous default; pass `false`
+   * to disable enforcement entirely; pass a config to override.
+   */
+  rateLimit?: RateLimitConfig | false;
+  /**
+   * Deterministic monotonic-ish clock (ms epoch) for the rate limiter. Tests
+   * inject a controllable clock; production leaves it as `Date.now`.
+   */
+  clock?: () => number;
+  /**
+   * Socket peer addresses whose `X-Forwarded-For` is trusted. Empty by default,
+   * so forwarding headers are ignored and the real peer address is used.
+   */
+  trustedProxies?: readonly string[];
+  /**
+   * Concurrent `GET /api/events` stream caps. Omit for the default; pass `false`
+   * to disable SSE connection bounding entirely; pass a config to override.
+   */
+  sseLimit?: SseLimitConfig | false;
+  /** Test-only override for the SSE heartbeat interval (ms). */
+  sseHeartbeatMs?: number;
 }
 
 class HttpError extends Error {
@@ -588,7 +812,34 @@ function json(res: ServerResponse, status: number, value: unknown) {
   res.end(body);
 }
 
+/**
+ * 429 rejection with a SimpleError body and a Retry-After header. Emitted before
+ * any state snapshot so the rejected mutation leaves state untouched and is
+ * never persisted as an idempotent response.
+ */
+function rateLimited(res: ServerResponse, retryAfterSeconds: number): void {
+  const body = JSON.stringify({
+    code: "RATE_LIMITED" satisfies ReasonCode,
+    error: "Too many mutation requests from this client. Retry after the " +
+      "indicated delay. (SIMULATOR: in-process single-instance limiter only.)",
+  });
+  res.writeHead(429, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "retry-after": String(Math.max(1, Math.trunc(retryAfterSeconds))),
+  });
+  res.end(body);
+}
+
 export function createLabServer(options: CreateLabServerOptions = {}) {
+  const clock = options.clock ?? Date.now;
+  const trustedProxies = new Set(
+    (options.trustedProxies ?? []).map((proxy) => normalizeIp(proxy)).filter(Boolean),
+  );
+  const rateLimiter = options.rateLimit === false
+    ? undefined
+    : new MutationRateLimiter(options.rateLimit ?? DEFAULT_RATE_LIMIT, clock);
   const persistentStore = options.dbPath
     ? options.storeFactory?.(options.dbPath) ?? new DurableStore(options.dbPath)
     : undefined;
@@ -724,10 +975,19 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
       );
     }
   };
-  const listeners = new Set<ServerResponse>();
+  const sseLimit = options.sseLimit === false ? undefined : options.sseLimit ?? DEFAULT_SSE_LIMIT;
+  const sseHeartbeatMs = options.sseHeartbeatMs ?? DEFAULT_SSE_HEARTBEAT_MS;
+  interface SseListener {
+    res: ServerResponse;
+    clientKey: string;
+    heartbeat: ReturnType<typeof setInterval>;
+    cleanup: () => void;
+  }
+  const listeners = new Set<SseListener>();
+  const ssePerClient = new Map<string, number>();
   const broadcast = () => {
     const payload = `event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`;
-    for (const listener of listeners) listener.write(payload);
+    for (const listener of listeners) listener.res.write(payload);
   };
   const succeed = (action: string, message: string, code: ReasonCode) => {
     state.lastResult = {
@@ -796,6 +1056,15 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           }
           if (replay) return json(res, replay.status, replay.body);
         }
+        // Rate limit AFTER the idempotent-replay short-circuit (a replay is a
+        // no-op that must always return its stored response) and BEFORE any
+        // state snapshot/mutation (a rejected request must not mutate).
+        if (rateLimiter) {
+          const decision = rateLimiter.take(resolveClientKey(req, trustedProxies));
+          if (!decision.allowed) {
+            return rateLimited(res, decision.retryAfterSeconds);
+          }
+        }
         rollbackSnapshot = snapshotLabState(state);
       }
       if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.health) {
@@ -805,18 +1074,69 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         return json(res, 200, publicSnapshot(state));
       }
       if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.events) {
+        // Bound concurrent streams BEFORE sending the SSE head, so a rejection
+        // is a normal 429 (EventSource surfaces it via onerror) rather than a
+        // half-open stream. Global cap first, then per-client cap.
+        if (sseLimit) {
+          const clientKey = resolveClientKey(req, trustedProxies);
+          const perClient = ssePerClient.get(clientKey) ?? 0;
+          if (listeners.size >= sseLimit.maxTotal || perClient >= sseLimit.maxPerClient) {
+            // Retry-After is advisory: streams free as clients disconnect.
+            return rateLimited(res, 1);
+          }
+          res.writeHead(200, {
+            "content-type": "text/event-stream",
+            "cache-control": "no-store",
+            connection: "keep-alive",
+          });
+          res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`);
+          const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), sseHeartbeatMs);
+          // Do not let the heartbeat timer keep the process alive on its own.
+          heartbeat.unref?.();
+          let released = false;
+          const listener: SseListener = {
+            res,
+            clientKey,
+            heartbeat,
+            cleanup: () => {
+              if (released) return; // idempotent: close AND error may both fire
+              released = true;
+              clearInterval(heartbeat);
+              listeners.delete(listener);
+              const next = (ssePerClient.get(clientKey) ?? 1) - 1;
+              if (next <= 0) ssePerClient.delete(clientKey);
+              else ssePerClient.set(clientKey, next);
+            },
+          };
+          listeners.add(listener);
+          ssePerClient.set(clientKey, perClient + 1);
+          req.on("close", listener.cleanup);
+          res.on("close", listener.cleanup);
+          res.on("error", listener.cleanup);
+          return;
+        }
+        // Unbounded mode (sseLimit disabled): original behavior with cleanup.
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-store",
           connection: "keep-alive",
         });
-        listeners.add(res);
         res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`);
-        const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
-        req.on("close", () => {
-          clearInterval(heartbeat);
-          listeners.delete(res);
-        });
+        const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), sseHeartbeatMs);
+        heartbeat.unref?.();
+        const listener: SseListener = {
+          res,
+          clientKey: "",
+          heartbeat,
+          cleanup: () => {
+            clearInterval(heartbeat);
+            listeners.delete(listener);
+          },
+        };
+        listeners.add(listener);
+        req.on("close", listener.cleanup);
+        res.on("close", listener.cleanup);
+        res.on("error", listener.cleanup);
         return;
       }
 
@@ -1075,17 +1395,76 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
       }
     }
   });
-  server.on("close", () => persistentStore?.close());
+  server.on("close", () => {
+    // Deterministically tear down every live SSE stream: clear its heartbeat,
+    // end the response, and drop registry entries so no timer or listener leaks
+    // past server shutdown.
+    for (const listener of [...listeners]) {
+      clearInterval(listener.heartbeat);
+      listener.cleanup();
+      try {
+        listener.res.end();
+      } catch {
+        // response may already be closing; teardown must not throw
+      }
+    }
+    listeners.clear();
+    ssePerClient.clear();
+    persistentStore?.close();
+  });
   return server;
+}
+
+/**
+ * Parse `AIRLOCK_RATE_LIMIT` of the form "capacity:refillPerSecond[:maxClients]"
+ * (e.g. "300:150" or "300:150:10000"). "off"/"disabled"/"0" disables the
+ * limiter. Returns undefined for an unset/blank var (uses the default).
+ */
+export function parseRateLimitEnv(
+  raw: string | undefined,
+): RateLimitConfig | false | undefined {
+  if (raw === undefined) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (value === "") return undefined;
+  if (value === "off" || value === "disabled" || value === "0") return false;
+  const parts = value.split(":");
+  const capacity = Number(parts[0]);
+  const refillPerSecond = Number(parts[1]);
+  const maxClients = parts[2] === undefined ? DEFAULT_RATE_LIMIT.maxClients : Number(parts[2]);
+  if (
+    !Number.isFinite(capacity) || capacity < 1 ||
+    !Number.isFinite(refillPerSecond) || refillPerSecond <= 0 ||
+    !Number.isInteger(maxClients) || maxClients < 1
+  ) {
+    throw new Error(
+      'AIRLOCK_RATE_LIMIT must be "capacity:refillPerSecond[:maxClients]" or "off"',
+    );
+  }
+  return { capacity, refillPerSecond, maxClients };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const host = process.env.AIRLOCK_HOST ?? "127.0.0.1";
   const port = Number(process.env.AIRLOCK_PORT ?? 8788);
   const dbPath = process.env.AIRLOCK_DB_PATH;
-  createLabServer(dbPath ? { dbPath } : {}).listen(port, host, () => {
+  const rateLimit = parseRateLimitEnv(process.env.AIRLOCK_RATE_LIMIT);
+  const trustedProxies = (process.env.AIRLOCK_TRUSTED_PROXIES ?? "")
+    .split(",")
+    .map((proxy) => proxy.trim())
+    .filter(Boolean);
+  createLabServer({
+    ...(dbPath ? { dbPath } : {}),
+    ...(rateLimit !== undefined ? { rateLimit } : {}),
+    ...(trustedProxies.length ? { trustedProxies } : {}),
+  }).listen(port, host, () => {
     console.log(`Contactless Airlock Lab: http://${host}:${port}`);
     console.log("SIMULATOR ONLY — no real payment network or customer data is connected.");
+    console.log(
+      rateLimit === false
+        ? "Per-client mutation rate limiting: DISABLED (AIRLOCK_RATE_LIMIT=off)."
+        : "Per-client mutation rate limiting: ENABLED (in-process, single-instance only; " +
+            "distributed/edge enforcement is external).",
+    );
     if (dbPath) {
       console.log(`SIMULATOR-ONLY persistence enabled at ${dbPath}; synthetic exportable demo keys are stored there.`);
     }

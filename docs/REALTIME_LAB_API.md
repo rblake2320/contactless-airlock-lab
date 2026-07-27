@@ -29,6 +29,15 @@ safe-integer minor-unit range. Its merchant ID is 1–64 characters in the
 documented ASCII set. Other mutations require no body; if a body is supplied,
 the current server accepts any JSON object and ignores its properties.
 
+Each `POST /api/*` request is additionally subject to a per-client mutation rate
+limit. When a client exceeds it the server returns `429` with a `Retry-After`
+header (whole seconds) and a `RATE_LIMITED` reason code, and **no state change
+occurs**. `GET` reads (`/api/state`, `/api/health`, `/api/events`) are never
+limited, and a persisted idempotent replay returns its stored response without
+consuming a token. This is an in-process, single-instance control only — it is
+not distributed or production enforcement; see
+[`REALTIME_LAB_RATE_LIMIT.md`](REALTIME_LAB_RATE_LIMIT.md).
+
 ## Stable reason codes
 
 Every JSON error contains `code` and the existing human-readable `error`.
