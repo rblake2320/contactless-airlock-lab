@@ -17,7 +17,8 @@ All items below must be complete before proposing a controlled partner pilot.
 
 ### Protocol and cryptography
 
-- [ ] Versioned canonical encoding has cross-language test vectors.
+- [x] Versioned canonical binding encoding has exact-byte and SHA-256 vectors
+      verified independently by TypeScript and Python standard-library code.
 - [ ] Every security-relevant field is authenticated and unknown fields fail
       closed.
 - [ ] Device keys are non-exportable and hardware-backed in the pilot client.
@@ -37,8 +38,11 @@ All items below must be complete before proposing a controlled partner pilot.
 - [ ] External mutations have durable idempotency records.
 - [ ] Transactional outbox and at-least-once consumers handle duplication,
       delay, reordering, and restart.
-- [ ] Barrier-driven multi-process tests prove exactly one terminal outcome
-      under competing approval, denial, expiry, cancellation, and retry.
+- [x] Barrier-driven separate-process tests on one host prove exactly one
+      restart-durable SQLite terminal outcome under competing approval/retry,
+      expiry, and cancellation.
+- [ ] Equivalent PostgreSQL and multi-host tests cover approval, denial,
+      expiry, cancellation, retry, failover, and connection-pool behavior.
 - [ ] Clearing, reversal, advice, offline, stand-in, partial, incremental,
       transit, tip-adjustment, and late-arrival behavior is explicit.
 - [ ] Backups, point-in-time recovery, disaster recovery, and audit retention
@@ -54,8 +58,14 @@ All items below must be complete before proposing a controlled partner pilot.
       isolation pass adversarial tests.
 - [ ] Logs and errors contain no credentials, PAN, payment-token material,
       notification tokens, signatures, or unnecessary personal data.
-- [ ] Dedicated SAST, dependency review, full-history secret scanning,
-      SBOM/provenance, signed-build, and container/image scans run in CI.
+- [x] Dedicated CodeQL SAST and full-history Gitleaks scans run in secret-free,
+      least-privilege CI.
+- [x] CI generates a CycloneDX SBOM of the checked-out repository/dependency
+      tree and retains it as a bounded-lifetime workflow artifact.
+- [ ] Dependency-review policy, artifact attestation, signed-build provenance,
+      and independent review of pinned action implementations are complete.
+- [ ] Container/image scanning is added if a deployable image becomes part of
+      the release; no container exists to scan today.
 - [ ] Independent penetration testing has no unresolved critical or high
       findings.
 

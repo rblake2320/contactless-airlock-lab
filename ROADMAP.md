@@ -6,10 +6,12 @@ promote simulator behavior into a production payment claim.
 
 ## P0: Protocol foundation
 
-- [x] Separate private repository with product boundaries
+- [x] Separate repository with product boundaries
 - [x] P-256 trusted-device signing reference implementation
 - [x] Canonical transaction/provisioning challenge payload
 - [x] Exact-field and unknown-field rejection
+- [x] Versioned canonical binding vectors match exact UTF-8 bytes and SHA-256
+      in TypeScript and an independent Python standard-library verifier
 - [x] One-time challenge consumption in the single-process lab
 - [x] Expiry and terminal-state behavior
 - [x] Monotonic provisioning and transaction state machines
@@ -27,7 +29,8 @@ promote simulator behavior into a production payment claim.
 - [ ] Transactional compare-and-swap challenge consumption
 - [ ] Idempotency records for every external mutation
 - [ ] Transactional outbox and at-least-once event consumers
-- [ ] Multi-process concurrency and restart tests
+- [x] Barrier-driven separate-process SQLite terminal races with restart proof
+      for approval/retry, expiry, and cancellation on one host
 - [ ] OpenAPI 3.1 issuer API
 - [ ] AsyncAPI partner event contract
 - [ ] Authentication and signed webhook verification
@@ -48,7 +51,8 @@ promote simulator behavior into a production payment claim.
 ## P3: Security closure
 
 - [ ] Property-based state-machine tests
-- [ ] Barrier-driven multi-instance race tests
+- [x] Barrier-driven multi-process, single-host SQLite race tests; PostgreSQL
+      and multi-host equivalence remain open
 - [ ] Fuzz canonical message decoding and schema validation
 - [ ] Key rotation, revocation, recovery, and compromised-device exercises
 - [ ] Push-fatigue and misleading-transaction UX tests
@@ -56,8 +60,12 @@ promote simulator behavior into a production payment claim.
 - [x] Strict TypeScript static checking in the default quality gate
 - [x] Secret-free CI runs tests, scenarios, demo, dependency audit,
       and a narrow committed-credential precheck
-- [ ] Dedicated SAST, full-history secret scanning, SBOM/provenance, and
-      container scanning
+- [x] Dedicated CodeQL SAST and full-history Gitleaks workflows
+- [x] CycloneDX SBOM generated from the checked-out source/dependency tree and
+      retained as a workflow artifact
+- [ ] Dependency-review policy, artifact attestation/signed build provenance,
+      and independent CI/action review
+- [ ] Container scanning if and when a deployable container image exists
 - [ ] Independent application-security review
 
 ## P4: Partner pilot

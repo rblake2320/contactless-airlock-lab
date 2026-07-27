@@ -50,7 +50,9 @@ The production adapter should preserve this interface and map:
 - idempotency uniqueness to a composite unique constraint;
 - migrations to a production migration runner with advisory locking.
 
-PostgreSQL integration, barrier-driven multi-process tests against that real
-database, backup/restore exercises, and partner service integration remain
-required before checking the PostgreSQL P1 roadmap item.
+Barrier-driven tests use separate Node processes and independent SQLite
+connections on one host; they do not prove multi-host behavior. PostgreSQL
+integration, equivalent races against that real database, backup/restore
+exercises, and partner service integration remain required before checking the
+PostgreSQL P1 roadmap item.
 
