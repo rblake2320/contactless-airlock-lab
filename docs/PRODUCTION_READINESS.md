@@ -24,8 +24,14 @@ All items below must be complete before proposing a controlled partner pilot.
 - [ ] Device keys are non-exportable and hardware-backed in the pilot client.
 - [ ] Key enrollment, rotation, revocation, recovery, and compromise handling
       are implemented and exercised.
-- [ ] Approval verification reconstructs or compares issuer-owned state before
-      one-time consumption.
+- [x] Approval verification compares issuer-owned stored challenge state before
+      one-time consumption: the submitted approval binding is canonicalized and
+      timing-safe compared against the issuer's stored challenge, expiry and the
+      device signature are checked, and the challenge transitions to a terminal
+      state so it cannot be consumed twice (single-host lab —
+      `packages/state-machine/challengeStore.ts`, `tests/audit-authentication.test.ts`
+      and the challenge lifecycle tests). Production hardware-backed device trust
+      remains covered by the device-key items above.
 - [x] Approval algorithm profile is versioned and signed; enrollment,
       verification, and restore reject unknown, missing, mismatched, and
       wrong-curve profiles without fallback.
@@ -36,12 +42,29 @@ All items below must be complete before proposing a controlled partner pilot.
 
 - [ ] Durable database migrations are repeatable and reversible under the
       documented policy.
-- [ ] Challenge consumption uses transactional compare-and-set semantics.
-- [ ] External mutations have durable idempotency records.
-- [ ] Transactional outbox and at-least-once consumers handle duplication,
-      delay, reordering, and restart.
-- [x] The current SQLite outbox record and lease lifecycle have a simulator-only
-      AsyncAPI contract with executable drift tests.
+- [x] The live lab serializes state transitions with WHOLE-SNAPSHOT optimistic
+      compare-and-swap: the entire engine state persists as one durable record
+      with a version, a stale writer's swap is rejected and its in-memory state
+      is reloaded-and-discarded, and generic durable-record terminal-race
+      evidence exists across contending OS processes (single-host —
+      `apps/realtime-lab/server.ts`, `tests/durable-storage.test.ts`,
+      `tests/durable-terminal-race.test.ts`). This is NOT per-challenge-row CAS.
+- [ ] Per-challenge-row transactional compare-and-set on a production database
+      (PostgreSQL) with multi-host/connection-pool correctness.
+- [x] Every realtime-lab HTTP mutation has a durable idempotency record on one
+      host: the first response is replayed, a same-key request with a divergent
+      canonical body/path is rejected without effect, concurrent duplicates
+      across two server processes produce exactly one effect, and records
+      survive restart (`tests/server-restart-idempotency.test.ts`,
+      `tests/durable-storage.test.ts`).
+- [ ] Partner/external-system mutations (issuer, processor, wallet/TSP) have
+      durable idempotency records under the agreed production contract.
+- [x] The single-host SQLite transactional outbox exercises atomic enqueue,
+      at-least-once leasing, acknowledgement, retry delay, wrong-owner
+      rejection, duplication, and restart behavior, with a simulator-only
+      AsyncAPI contract and executable drift tests.
+- [ ] Production outbox consumers and partner transport handle duplication,
+      delay, reordering, dead-letter policy, failover, and restart.
 - [ ] A partner-agreed event contract defines authenticated transport, envelope
       versioning, topic payloads, correlation/causation, retry/DLQ policy, and
       acknowledgement semantics.
@@ -52,8 +75,12 @@ All items below must be complete before proposing a controlled partner pilot.
       expiry, cancellation, retry, failover, and connection-pool behavior.
 - [ ] Clearing, reversal, advice, offline, stand-in, partial, incremental,
       transit, tip-adjustment, and late-arrival behavior is explicit.
-- [ ] Backups, point-in-time recovery, disaster recovery, and audit retention
-      are exercised rather than documented only.
+- [x] WAL-consistent SQLite snapshot backup and verified restore are exercised
+      against live concurrent writers, corruption, wrong-source data, failed
+      restore cleanup, and a full application lifecycle.
+- [ ] Continuous point-in-time recovery, authenticated/off-host backup
+      retention, disaster recovery, and production audit retention are
+      exercised under an approved operational policy.
 - [ ] The authenticated audit profile is wired to an HSM/KMS-backed key
       provider and independently administered chain-tip anchor with tested
       atomic publication and crash recovery. Direct profile tests alone do not
@@ -73,8 +100,11 @@ All items below must be complete before proposing a controlled partner pilot.
       least-privilege CI.
 - [x] CI generates a CycloneDX SBOM of the checked-out repository/dependency
       tree and retains it as a bounded-lifetime workflow artifact.
-- [ ] Dependency-review policy, artifact attestation, signed-build provenance,
-      and independent review of pinned action implementations are complete.
+- [x] A least-privilege, commit-SHA-pinned pull-request dependency-review gate
+      fails on newly introduced high/critical advisories. It is explicitly not
+      a runtime, baseline, deep-transitive, or license-policy scanner.
+- [ ] Artifact attestation, signed-build provenance, and independent review of
+      pinned action implementations are complete.
 - [ ] Container/image scanning is added if a deployable image becomes part of
       the release; no container exists to scan today.
 - [ ] Independent penetration testing has no unresolved critical or high
