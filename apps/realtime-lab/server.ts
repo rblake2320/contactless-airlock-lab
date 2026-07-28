@@ -1376,10 +1376,10 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         const token = bearerToken(req);
         let session: AuthenticatedSession | undefined;
         try {
-          if (token && identityProvider?.type === "bootstrap-controlled-demo") {
-            session = sessionBoundary.login(token);
-          } else if (token && identityProvider?.type === "oidc") {
-            const identity: VerifiedIdentity = await oidcVerifier!.verify(token);
+          if (identityProvider?.type === "bootstrap-controlled-demo") {
+            session = sessionBoundary.login(token ?? "");
+          } else if (identityProvider?.type === "oidc") {
+            const identity: VerifiedIdentity = await oidcVerifier!.verify(token ?? "");
             dependencyRecovered("identityProvider");
             session = sessionBoundary.issue({
               principalId: identity.principalId,
@@ -1443,7 +1443,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         url.pathname !== REALTIME_LAB_API_ROUTES.health
       ) {
         const sessionId = cookieValue(req, "airlock_session");
-        activeSession = sessionId ? sessionBoundary.authenticate(sessionId) : undefined;
+        activeSession = sessionBoundary.authenticate(sessionId ?? "");
         if (!activeSession) {
           return json(res, 401, {
             code: "AUTHENTICATION_REQUIRED",
