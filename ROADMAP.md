@@ -45,11 +45,14 @@ promote simulator behavior into a production payment claim.
       `docs/BACKUP_RESTORE.md`; PITR/off-host/DR tracked in
       `docs/PRODUCTION_READINESS.md`).
 - [ ] PostgreSQL durable state and schema migrations
-- [x] Transactional compare-and-swap consumption on the single-host SQLite
-      store: exactly one terminal transition across contending connections and
-      OS processes (`tests/durable-storage.test.ts`,
-      `tests/durable-terminal-race.test.ts`). Multi-host / PostgreSQL
-      equivalence remains open (see PostgreSQL item above).
+- [x] The single-host realtime lab serializes challenge-state mutations through
+      a versioned whole-snapshot SQLite compare-and-swap: a stale writer loses
+      the swap, reloads authoritative state, and discards its in-memory
+      mutation. Generic durable-record tests separately prove exactly one
+      terminal transition across contending connections and OS processes
+      (`apps/realtime-lab/server.ts`, `tests/durable-storage.test.ts`,
+      `tests/durable-terminal-race.test.ts`). This is not per-challenge-row CAS;
+      PostgreSQL and multi-host equivalence remain open.
 - [x] Idempotency records for every realtime-lab HTTP mutation on a single host:
       the first response is replayed, a same-key request with a different
       canonical body/path is rejected without effect, concurrent duplicates
