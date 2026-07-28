@@ -1,0 +1,55 @@
+name: Browser E2E
+
+# Real-browser end-to-end gate for the simulator realtime-lab UI. Runs from a
+# pristine checkout with a repo-pinned Playwright (package.json/package-lock.json)
+# and an explicit, cacheable Chromium download. See docs/BROWSER_E2E.md.
+
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airlock-e2e-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  browser-e2e:
+    name: Browser E2E (Chromium)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@6044e13b5dc448c55e2357c09f80417699197238 # v6.0.0
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies (locked, no lifecycle scripts)
+        run: npm ci --ignore-scripts
+
+      # Resolve the exact Playwright version this repo pins, so the browser
+      # revision downloaded below is deterministic and cache-keyable.
+      - name: Resolve pinned Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('./node_modules/playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.pw.outputs.version }}
+
+      - name: Install Chromium (explicit, pinned to the repo Playwright version)
+        run: npm run e2e:install
+
+      - name: Run browser E2E gate
+        run: npm run e2e

@@ -280,6 +280,62 @@ export const REALTIME_LAB_API_ROUTES = Object.freeze({
   demonstrationPrefix: "/api/demonstrate/",
 });
 
+export interface RouteManifestEntry {
+  readonly label: string;
+  /** The exact path, or the prefix, this entry was declared with — kept for
+   *  introspection (parity tests) separately from `matches`, which is what
+   *  the dispatcher itself actually calls. */
+  readonly path: string;
+  readonly isPrefix: boolean;
+  readonly methods: readonly string[];
+  readonly matches: (pathname: string) => boolean;
+}
+
+function exactRoute(label: string, path: string, methods: readonly string[]): RouteManifestEntry {
+  return { label, path, isPrefix: false, methods, matches: (pathname) => pathname === path };
+}
+
+function prefixRoute(label: string, prefix: string, methods: readonly string[]): RouteManifestEntry {
+  return { label, path: prefix, isPrefix: true, methods, matches: (pathname) => pathname.startsWith(prefix) };
+}
+
+/**
+ * Every route this server recognizes, with the exact method set each one
+ * accepts. This is the single source of truth for both HEAD support and
+ * 405 dispatch below — a route's allowed methods are declared here once,
+ * not duplicated across handler `if` conditions, so `Allow` headers and
+ * actual handler behavior cannot independently drift from each other.
+ *
+ * `/api/events` intentionally omits HEAD (see docs/HEAD_REQUESTS.md: an
+ * open-ended SSE stream has no fixed body for HEAD to describe). Exact
+ * entries are listed before the `/api/demonstrate/` prefix entry so a
+ * lookup by array order finds the more specific match first, though today
+ * both resolve to the same POST-only method set either way.
+ */
+export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = Object.freeze([
+  exactRoute("root", "/", ["GET", "HEAD"]),
+  exactRoute("app.js", "/app.js", ["GET", "HEAD"]),
+  exactRoute("styles.css", "/styles.css", ["GET", "HEAD"]),
+  exactRoute("health", REALTIME_LAB_API_ROUTES.health, ["GET", "HEAD"]),
+  exactRoute("state", REALTIME_LAB_API_ROUTES.state, ["GET", "HEAD"]),
+  exactRoute("events", REALTIME_LAB_API_ROUTES.events, ["GET"]),
+  exactRoute("reset", REALTIME_LAB_API_ROUTES.reset, ["POST"]),
+  exactRoute("provisionRequest", REALTIME_LAB_API_ROUTES.provisionRequest, ["POST"]),
+  exactRoute("provisionAttack", REALTIME_LAB_API_ROUTES.provisionAttack, ["POST"]),
+  exactRoute("provisionApprove", REALTIME_LAB_API_ROUTES.provisionApprove, ["POST"]),
+  exactRoute("deviceRevoke", REALTIME_LAB_API_ROUTES.deviceRevoke, ["POST"]),
+  exactRoute("transactionRequest", REALTIME_LAB_API_ROUTES.transactionRequest, ["POST"]),
+  exactRoute("transactionConfirm", REALTIME_LAB_API_ROUTES.transactionConfirm, ["POST"]),
+  exactRoute("transactionExpire", REALTIME_LAB_API_ROUTES.transactionExpire, ["POST"]),
+  exactRoute("transactionClear", REALTIME_LAB_API_ROUTES.transactionClear, ["POST"]),
+  exactRoute("auditTamper", REALTIME_LAB_API_ROUTES.auditTamper, ["POST"]),
+  prefixRoute("demonstration", REALTIME_LAB_API_ROUTES.demonstrationPrefix, ["POST"]),
+]);
+
+export function findRouteManifestEntry(pathname: string): RouteManifestEntry | undefined {
+  return ROUTE_MANIFEST.find((entry) => entry.matches(pathname));
+}
+
 interface LabState {
   engine: AirlockEngine;
   keys: DeviceKeyPair;
@@ -802,14 +858,45 @@ function publicSnapshot(state: LabState) {
   };
 }
 
-function json(res: ServerResponse, status: number, value: unknown) {
+/**
+ * `method` defaults to "GET" so every existing call site is unaffected.
+ * Passing "HEAD" keeps status/headers — including a Content-Length that
+ * matches what the equivalent GET would have sent — but writes no body, per
+ * RFC 7231 §4.3.2. Only the routes that actually accept HEAD (see the
+ * root/static handler below) ever pass "HEAD" through.
+ */
+function json(
+  res: ServerResponse,
+  status: number,
+  value: unknown,
+  method: string = "GET",
+  extraHeaders?: Record<string, string>,
+) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "cache-control": "no-store",
+    ...extraHeaders,
   });
-  res.end(body);
+  res.end(method === "HEAD" ? undefined : body);
+}
+
+/**
+ * 405 for a route the manifest recognizes but not with this method. `Allow`
+ * lists exactly the manifest's methods for that route — never a generic or
+ * hand-maintained list — so it cannot drift from what the dispatcher itself
+ * enforces. Emitted before any body read/idempotency/rate-limit handling so
+ * a 405 is always side-effect-free, matching HEAD's zero-body rule too.
+ */
+function methodNotAllowed(res: ServerResponse, method: string, allowedMethods: readonly string[]): void {
+  json(
+    res,
+    405,
+    { code: "METHOD_NOT_ALLOWED", error: `${method} is not allowed on this route.` },
+    method,
+    { allow: allowedMethods.join(", ") },
+  );
 }
 
 /**
@@ -1023,6 +1110,16 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
     };
     try {
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      const method = req.method ?? "GET";
+      // Manifest-driven 405 dispatch runs before ANY body read, idempotency
+      // lookup, or rate-limit check: a wrong-method request to a known route
+      // must be fully side-effect-free, exactly like the HEAD zero-body rule
+      // below. An unrecognized path has no manifest entry and falls through
+      // unchanged to the existing GET/HEAD-or-404 handling further down.
+      const manifestEntry = findRouteManifestEntry(url.pathname);
+      if (manifestEntry && !manifestEntry.methods.includes(method)) {
+        return methodNotAllowed(res, method, manifestEntry.methods);
+      }
       let requestBody: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       if (req.method === "POST" && url.pathname.startsWith("/api/")) {
         enforceMutationSource(req);
@@ -1067,11 +1164,17 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         }
         rollbackSnapshot = snapshotLabState(state);
       }
-      if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.health) {
-        return json(res, 200, { ok: true, simulator: true });
+      if (
+        (req.method === "GET" || req.method === "HEAD") &&
+        url.pathname === REALTIME_LAB_API_ROUTES.health
+      ) {
+        return json(res, 200, { ok: true, simulator: true }, req.method);
       }
-      if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.state) {
-        return json(res, 200, publicSnapshot(state));
+      if (
+        (req.method === "GET" || req.method === "HEAD") &&
+        url.pathname === REALTIME_LAB_API_ROUTES.state
+      ) {
+        return json(res, 200, publicSnapshot(state), req.method);
       }
       if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.events) {
         // Bound concurrent streams BEFORE sending the SSE head, so a rejection
@@ -1321,10 +1424,18 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         }
       }
 
-      if (req.method === "GET") {
+      // Scope decision (documented in docs/HEAD_REQUESTS.md): HEAD is
+      // supported for these root/static routes, matching GET's status and
+      // headers exactly with no body — RFC 7231 §4.3.2. /api/health and
+      // /api/state also accept HEAD (handled above); the Content-Length in
+      // that case describes the snapshot as of this instant only, same as
+      // any HEAD against dynamic content. /api/events remains GET-only: an
+      // open-ended SSE stream has no fixed body to describe the length of,
+      // so HEAD's contract does not apply there.
+      if (req.method === "GET" || req.method === "HEAD") {
         const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
         if (!["index.html", "app.js", "styles.css"].includes(relative)) {
-          return json(res, 404, { code: "NOT_FOUND", error: "not found" });
+          return json(res, 404, { code: "NOT_FOUND", error: "not found" }, req.method);
         }
         const body = await readFile(join(PUBLIC_DIR, relative));
         const types: Record<string, string> = {
@@ -1337,9 +1448,9 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           "content-length": body.length,
           "cache-control": "no-store",
         });
-        return res.end(body);
+        return res.end(req.method === "HEAD" ? undefined : body);
       }
-      return json(res, 404, { code: "NOT_FOUND", error: "not found" });
+      return json(res, 404, { code: "NOT_FOUND", error: "not found" }, req.method);
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
       if (error instanceof HttpError) {

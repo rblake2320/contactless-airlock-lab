@@ -12,6 +12,8 @@
     "scenarios": "node --experimental-strip-types tools/scenarios.ts",
     "release:evidence": "node --experimental-strip-types tools/release-evidence.ts",
     "acceptance": "node --experimental-strip-types tools/live-acceptance.ts",
+    "e2e:install": "playwright install --with-deps chromium",
+    "e2e": "node --experimental-strip-types --test tests/e2e/browser.e2e.ts",
     "guard:boundaries": "node scripts/no-test-verifier-in-prod.mjs",
     "check": "npm run typecheck && npm run guard:boundaries && npm test && npm run scenarios",
     "security:audit": "npm audit --audit-level=high"
@@ -21,6 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "24.13.3",
+    "playwright": "1.58.2",
     "typescript": "7.0.2"
   }
 }

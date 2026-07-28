@@ -34,11 +34,13 @@
         <article class="lane">
           <div class="lane-head"><span>03</span><h2>Issuer airlock</h2></div>
           <p>Binds the amount and merchant to a one-time confirmation challenge.</p>
-          <div class="fields">
-            <label>Amount<input id="amount" inputmode="decimal" value="25.00" aria-label="Transaction amount" autocomplete="off"></label>
-            <label>Merchant<input id="merchant" value="synthetic-merchant-001" aria-label="Merchant identifier" aria-describedby="merchant-help" autocomplete="off"><small id="merchant-help">1–64 allowed characters; invalid input is rejected, never truncated.</small></label>
-          </div>
-          <button id="request-transaction" data-capability="requestTransaction">Request transaction</button>
+          <form id="transaction-request-form">
+            <div class="fields">
+              <label>Amount<input id="amount" name="amount" type="text" inputmode="decimal" value="25.00" required maxlength="25" pattern="\s*(?:0\.(?:[1-9]|[0-9][1-9]|[1-9][0-9])|(?:[1-9][0-9]{0,12}|[1-8][0-9]{13}|900[0-6][0-9]{10}|90070[0-9]{9}|90071[0-8][0-9]{8}|900719[0-8][0-9]{7}|9007199[0-1][0-9]{6}|90071992[0-4][0-9]{5}|900719925[0-3][0-9]{4}|9007199254[0-6][0-9]{3}|90071992547[0-3][0-9]{2}|9007199254740[0-7]|90071992547408)(?:\.[0-9]{1,2})?|90071992547409(?:\.(?:[0-8]?[0-9]|9[01]))?)\s*" title="A positive decimal amount, up to two fraction digits, no more than 90071992547409.91" aria-label="Transaction amount" aria-describedby="amount-help" autocomplete="off"><small id="amount-help">Decimal, up to two fraction digits, greater than zero; invalid input is rejected, never rounded or clamped.</small></label>
+              <label>Merchant<input id="merchant" name="merchant" type="text" value="synthetic-merchant-001" required maxlength="80" pattern="\s*[A-Za-z0-9][A-Za-z0-9._:-]{0,63}\s*" title="1-64 letters, numbers, dots, colons, underscores, or hyphens" aria-label="Merchant identifier" aria-describedby="merchant-help" autocomplete="off"><small id="merchant-help">1–64 allowed characters; invalid input is rejected, never truncated.</small></label>
+            </div>
+            <button id="request-transaction" type="submit" data-capability="requestTransaction">Request transaction</button>
+          </form>
           <button data-action="/api/transaction/confirm" data-capability="confirmTransaction">Confirm exact binding</button>
           <dl><div><dt>Transaction</dt><dd id="transaction-state">absent</dd></div><div><dt>Challenge</dt><dd id="challenge-id">—</dd></div></dl>
         </article>

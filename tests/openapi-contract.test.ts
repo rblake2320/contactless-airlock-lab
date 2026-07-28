@@ -6,8 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   createLabServer,
+  findRouteManifestEntry,
   REASON_CODES,
   REALTIME_LAB_API_ROUTES,
+  ROUTE_MANIFEST,
 } from "../apps/realtime-lab/server.ts";
 import { DurableStore } from "../packages/storage/durableStore.ts";
 
@@ -119,22 +121,25 @@ async function post(
 test("OpenAPI path/method set exactly matches the router's runtime manifest", () => {
   assert.equal(contract.openapi, "3.1.0");
   assert.match(contract.info.description, /SIMULATOR ONLY/);
-  const sourceRoutes = new Set([
-    `get ${REALTIME_LAB_API_ROUTES.health}`,
-    `get ${REALTIME_LAB_API_ROUTES.state}`,
-    `get ${REALTIME_LAB_API_ROUTES.events}`,
-    `post ${REALTIME_LAB_API_ROUTES.reset}`,
-    `post ${REALTIME_LAB_API_ROUTES.provisionRequest}`,
-    `post ${REALTIME_LAB_API_ROUTES.provisionAttack}`,
-    `post ${REALTIME_LAB_API_ROUTES.provisionApprove}`,
-    `post ${REALTIME_LAB_API_ROUTES.deviceRevoke}`,
-    `post ${REALTIME_LAB_API_ROUTES.transactionRequest}`,
-    `post ${REALTIME_LAB_API_ROUTES.transactionConfirm}`,
-    `post ${REALTIME_LAB_API_ROUTES.transactionExpire}`,
-    `post ${REALTIME_LAB_API_ROUTES.transactionClear}`,
-    `post ${REALTIME_LAB_API_ROUTES.auditTamper}`,
-    `post ${REALTIME_LAB_API_ROUTES.demonstrationPrefix}{attackName}`,
-  ]);
+  // Derived from ROUTE_MANIFEST — the same data structure the live server
+  // uses for 405 dispatch — rather than hand-listed, so this test fails the
+  // moment a route is added/changed in the manifest without a matching
+  // OpenAPI update, instead of only catching drift someone remembered to
+  // mirror here by hand. Static asset routes (/, /app.js, /styles.css) are
+  // excluded: this contract documents the JSON API, not asset serving.
+  // HEAD is excluded from this comparison and checked separately below: it
+  // is a transport-level convention implied by GET, not a distinct declared
+  // operation, matching how this contract (and most OpenAPI-documented
+  // HTTP APIs) treats it.
+  const sourceRoutes = new Set<string>();
+  for (const entry of ROUTE_MANIFEST) {
+    if (!entry.path.startsWith("/api/")) continue;
+    const path = entry.isPrefix ? `${entry.path}{attackName}` : entry.path;
+    for (const method of entry.methods) {
+      if (method === "HEAD") continue;
+      sourceRoutes.add(`${method.toLowerCase()} ${path}`);
+    }
+  }
   const contractRoutes = new Set<string>();
   for (const [path, pathItem] of Object.entries(contract.paths) as Array<[string, ObjectValue]>) {
     for (const method of ["get", "post"]) {
@@ -142,6 +147,40 @@ test("OpenAPI path/method set exactly matches the router's runtime manifest", ()
     }
   }
   assert.deepEqual([...contractRoutes].sort(), [...sourceRoutes].sort());
+});
+
+test("ROUTE_MANIFEST never offers HEAD without the corresponding GET", () => {
+  // The structural guarantee that stands in for OpenAPI HEAD parity: every
+  // manifest entry that accepts HEAD also accepts GET, so HEAD is always a
+  // strict "same response, no body" mirror of a documented GET operation —
+  // never an independent capability that could diverge from the contract.
+  for (const entry of ROUTE_MANIFEST) {
+    if (entry.methods.includes("HEAD")) {
+      assert.ok(
+        entry.methods.includes("GET"),
+        `${entry.label} (${entry.path}) offers HEAD without GET`,
+      );
+    }
+  }
+});
+
+test("every REALTIME_LAB_API_ROUTES value is covered by a ROUTE_MANIFEST entry", () => {
+  for (const [name, path] of Object.entries(REALTIME_LAB_API_ROUTES)) {
+    if (name === "demonstrationPrefix") continue; // covered via prefix match, not equality
+    const matching = ROUTE_MANIFEST.filter((entry) => entry.matches(path));
+    assert.ok(matching.length >= 1, `${name} (${path}) matched no manifest entry`);
+    // auditTamper legitimately matches both its own exact entry and the
+    // demonstration prefix entry (both POST-only, so no behavioral
+    // ambiguity) — every other route must resolve to exactly one entry.
+    if (name !== "auditTamper") {
+      assert.equal(matching.length, 1, `${name} (${path}) matched ${matching.length} manifest entries`);
+    }
+  }
+});
+
+test("findRouteManifestEntry resolves auditTamper to its exact entry, not the demonstration prefix", () => {
+  const entry = findRouteManifestEntry(REALTIME_LAB_API_ROUTES.auditTamper);
+  assert.equal(entry?.label, "auditTamper");
 });
 
 test("transaction request schema and live parser agree at positive and negative boundaries", async () => {
