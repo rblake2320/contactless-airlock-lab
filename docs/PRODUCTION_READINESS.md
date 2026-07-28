@@ -42,6 +42,13 @@ All items below must be complete before proposing a controlled partner pilot.
 
 - [ ] Durable database migrations are repeatable and reversible under the
       documented policy.
+- [x] A tenant-scoped PostgreSQL adapter and forward-only migration contract
+      implement optimistic CAS, durable idempotency, atomic outbox enqueue and
+      leasing, and cap reservations. Static/contract tests pass; the real
+      multi-process integration test is deliberately opt-in and remains
+      unexecuted until `AIRLOCK_POSTGRES_URL` names an approved test database
+      (`packages/storage/postgresStore.ts`,
+      `tests/postgres-integration.test.ts`).
 - [x] The live lab serializes state transitions with WHOLE-SNAPSHOT optimistic
       compare-and-swap: the entire engine state persists as one durable record
       with a version, a stale writer's swap is rejected and its in-memory state
@@ -65,6 +72,11 @@ All items below must be complete before proposing a controlled partner pilot.
       AsyncAPI contract and executable drift tests.
 - [ ] Production outbox consumers and partner transport handle duplication,
       delay, reordering, dead-letter policy, failover, and restart.
+- [x] A candidate, non-partner-approved transport adapter exercises raw-body
+      message signing, bounded replay protection, idempotent receiving,
+      timeout/retry/circuit-breaker behavior, and durable dead-letter-before-
+      acknowledgement semantics with no configured external destination
+      (`packages/partner-transport`, `tests/partner-transport.test.ts`).
 - [ ] A partner-agreed event contract defines authenticated transport, envelope
       versioning, topic payloads, correlation/causation, retry/DLQ policy, and
       acknowledgement semantics.
@@ -88,12 +100,26 @@ All items below must be complete before proposing a controlled partner pilot.
 
 ### Application and integration security
 
+- [x] A standalone strict OIDC/JWT access-token verifier boundary validates an
+      exact HTTPS issuer, audience, asymmetric algorithm allowlist, bounded
+      JWKS rotation/cache, token time claims, signed tenant/principal/roles, and
+      optional atomic `jti` replay policy with real-JWT adversarial tests.
+      Authenticated server mode composes this verifier without bootstrap
+      fallback and caps the resulting process-local session at the signed token
+      expiry. A real identity provider, distributed replay/session store, and
+      production access audit remain external deployment work.
 - [ ] All partner calls and webhooks are mutually authenticated or
       message-signed, authorized, replay-protected, versioned, and size-bounded.
 - [ ] Operator access is strongly authenticated, least-privilege, and audited;
       sensitive overrides use dual control.
-- [ ] Rate limits, abuse controls, circuit breakers, timeouts, and capacity
-      isolation pass adversarial tests.
+- [x] The realtime simulator has executable authenticated principals, roles,
+      bounded sessions, CSRF/origin enforcement, logout revocation, and
+      process-local tenant isolation. Distributed identity/session storage and
+      production access auditing remain open.
+- [x] The single-process simulator and candidate partner adapter exercise
+      bounded request/SSE admission, mutation rate limits, timeouts, retry
+      budgets, and circuit breaking under adversarial tests. Distributed edge
+      enforcement and production dependency isolation remain open.
 - [ ] Logs and errors contain no credentials, PAN, payment-token material,
       notification tokens, signatures, or unnecessary personal data.
 - [x] Dedicated CodeQL SAST and full-history Gitleaks scans run in secret-free,
@@ -121,8 +147,20 @@ All items below must be complete before proposing a controlled partner pilot.
       credentials, and telemetry are isolated.
 - [ ] Device loss, account recovery, false decline, fraudulent approval, and
       dispute procedures are tested with named owners.
+- [x] Synthetic, tenant-scoped customer/fraud workflow state machines exercise
+      device loss, strong-proof recovery, false-decline review, fraudulent-
+      approval dispute, compromise response, and dual-control destructive reset
+      without SMS/typed-code downgrade or direct notification delivery
+      (`packages/customer-operations`, `tests/customer-operations.test.ts`).
+      Named production owners, real IAM/case systems, and liability procedures
+      remain open.
 - [ ] Monitoring has service-level objectives, actionable alerts, runbooks,
       escalation paths, and privacy-safe evidence.
+- [x] A non-production controlled-demo launch policy, deterministic capacity
+      evidence evaluator, bounded privacy-safe telemetry model, and incident/
+      rollback runbook exist with executable tests. External telemetry export,
+      paging, distributed admission, and completed operational drills remain
+      open.
 - [ ] Incident response and credential/key compromise exercises are complete.
 - [ ] Accessibility and misleading/push-fatigue UX testing is complete.
 - [ ] Rollback does not create an authentication downgrade or bypass a required
@@ -141,6 +179,14 @@ All items below must be complete before proposing a controlled partner pilot.
       the release-evidence bundle explicitly claims neither.
 - [ ] Performance evidence states hardware, concurrency, dataset, warm/cold
       state, and partner/simulator involvement.
+- [x] The opt-in capacity gate requires and records commit/build identity,
+      hardware/process context, concurrency, warm/cold declaration, duration,
+      loopback-only scope, latency percentiles, success ratio, and overload
+      evidence. No performance claim is made until its full policy window is
+      actually run and retained (`tools/capacity-gate.ts`).
+- [x] Runtime health exposes an explicit build identifier and startup-snapshotted
+      static-asset digest; executable tests prove a running backend cannot serve
+      frontend bytes changed on disk after startup.
 - [ ] Documentation and demonstrations use the release-language restrictions
       in `ROADMAP.md`.
 

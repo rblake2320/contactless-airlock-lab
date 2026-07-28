@@ -252,8 +252,20 @@ test("all references resolve and every mutation declares real controls and error
       assert.ok(!operationIds.has(operation.operationId), "duplicate operationId");
       operationIds.add(operation.operationId);
       assert.equal(operation["x-simulator-only"], true);
-      assert.deepEqual(operation.security, []);
+      if (operation.operationId === "loginSession") {
+        assert.deepEqual(operation.security, [{ loginBearer: [] }]);
+      } else if (["getSession", "logoutSession"].includes(operation.operationId)) {
+        assert.deepEqual(operation.security, [{ sessionCookie: [] }]);
+      } else if (operation.operationId === "getLabHealth") {
+        assert.deepEqual(operation.security, []);
+      } else {
+        assert.deepEqual(operation.security, [{}, { sessionCookie: [] }]);
+      }
       if (method === "post") {
+        if (["loginSession", "logoutSession"].includes(operation.operationId)) {
+          assert.equal(operation["x-maxBodyBytes"], 0);
+          continue;
+        }
         assert.equal(operation["x-maxBodyBytes"], 16384);
         const names = operation.parameters.map((parameter: ObjectValue) => resolve(parameter).name);
         assert.ok(names.includes("Origin"));
@@ -268,6 +280,56 @@ test("all references resolve and every mutation declares real controls and error
   const idempotency = contract.components.parameters.IdempotencyKey;
   assert.equal(idempotency.schema.maxLength, 128);
   assert.equal(idempotency["x-requiredWhen"], "AIRLOCK_DB_PATH is set");
+  const authenticatedProfile =
+    contract["x-airlock-access-profiles"].authenticated;
+  const operations = Object.values(contract.paths).flatMap(
+    (pathItem: any) => ["get", "post"]
+      .map((method) => pathItem[method]?.operationId)
+      .filter(Boolean),
+  );
+  const protectedOperations = operations.filter(
+    (operationId: string) =>
+      !["getLabHealth", "loginSession"].includes(operationId),
+  );
+  assert.deepEqual(
+    [...authenticatedProfile.sessionProtectedOperationIds].sort(),
+    [...protectedOperations].sort(),
+  );
+  const csrfOperations = Object.values(contract.paths).flatMap(
+    (pathItem: any) => pathItem.post &&
+        pathItem.post.operationId !== "loginSession"
+      ? [pathItem.post.operationId]
+      : [],
+  );
+  assert.deepEqual(
+    [...authenticatedProfile.csrfProtectedOperationIds].sort(),
+    [...csrfOperations].sort(),
+  );
+  assert.deepEqual(
+    authenticatedProfile.csrfRequiredHeaders,
+    ["Origin", "X-CSRF-Token"],
+  );
+  assert.equal(authenticatedProfile.oidcRuntimeComposition, true);
+  assert.equal(authenticatedProfile.webAuthnRuntimeComposition, false);
+  assert.equal(
+    Object.hasOwn(authenticatedProfile, "oidcWebAuthnRuntimeComposition"),
+    false,
+    "combined identity-composition flag must not collapse distinct runtime states",
+  );
+  assert.deepEqual(authenticatedProfile.loginOperationIds, ["loginSession"]);
+  assert.deepEqual(authenticatedProfile.loginSecurity, [{ loginBearer: [] }]);
+  assert.deepEqual(
+    Object.keys(authenticatedProfile.loginProviderProfiles).sort(),
+    ["bootstrap-controlled-demo", "oidc"],
+  );
+  assert.match(
+    contract.components.securitySchemes.loginBearer.bearerFormat,
+    /controlled-demo credential or OIDC JWT access token/,
+  );
+  assert.equal(
+    Object.hasOwn(contract.components.securitySchemes, "bootstrapBearer"),
+    false,
+  );
   assert.deepEqual(
     contract.components.schemas.ReasonCode.enum,
     [...REASON_CODES],

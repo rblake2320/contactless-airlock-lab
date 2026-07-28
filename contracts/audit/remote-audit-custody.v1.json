@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "airlock.remote-audit-custody.v1",
+  "status": "adapter-contract-unconfigured",
+  "description": "Candidate composition contract for remote HMAC custody and independently persisted trust anchors. No cloud KMS, HSM, credential, or external anchor service is connected.",
+  "macProvider": {
+    "algorithm": "HMAC-SHA256",
+    "canonicalInput": "UTF-8 bytes: airlock-audit-hmac-v1 + LF + sequence + LF + event_hash + LF + key_id + LF + key_version + LF + previous_authentication_tag",
+    "tagEncoding": "base64url without padding, exactly 43 characters",
+    "methods": {
+      "activeKey": {
+        "returns": ["keyId", "keyVersion", "status"],
+        "rawKeyMaterialReturned": false
+      },
+      "keyMetadata": {
+        "returns": ["keyId", "keyVersion", "status"],
+        "historicalRetiredKeysRequired": true,
+        "rawKeyMaterialReturned": false
+      },
+      "createMac": {
+        "input": ["canonicalBytes", "keyId", "keyVersion"],
+        "remoteOperationRequired": true
+      },
+      "verifyMac": {
+        "input": ["canonicalBytes", "tag", "keyId", "keyVersion"],
+        "remoteOperationRequired": true
+      }
+    },
+    "requiredCapabilities": [
+      "non-exportable 256-bit-or-stronger HMAC key",
+      "key-ID and monotonic-version binding",
+      "historical verification during retention",
+      "audited sign/verify operations",
+      "least-privilege workload identity"
+    ]
+  },
+  "anchorPublisher": {
+    "independentTrustBoundaryRequired": true,
+    "methods": ["load", "compare-and-swap publish"],
+    "record": [
+      "eventCount", "tipHash", "tipAuthenticationTag", "tipKeyId",
+      "tipKeyVersion", "activeKeyId", "activeKeyVersion", "revision"
+    ],
+    "requiredCapabilities": [
+      "durable compare-and-swap",
+      "monotonic revision",
+      "separate credentials and administration from audit state store",
+      "retention and rollback protection",
+      "read-after-write consistency for recovery"
+    ]
+  },
+  "stateStore": {
+    "protocol": "prepare -> external anchor CAS publish -> local commit",
+    "atomicOperations": ["load", "prepare", "commit", "abort"],
+    "recovery": {
+      "pendingMatchesPublishedAnchor": "commit exactly once",
+      "pendingDoesNotMatchPublishedAnchor": "abort pending",
+      "publishedAnchorDoesNotMatchCommittedOrPendingState": "fail closed"
+    }
+  },
+  "prohibitedFallbacks": [
+    "raw HMAC bytes in application configuration",
+    "local HMAC when the remote provider is unavailable",
+    "co-locating the only anchor with mutable audit state",
+    "accepting unknown key versions",
+    "reactivating a retired lower key version"
+  ],
+  "implementedExternalAdapters": []
+}

@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -11,8 +11,31 @@ import {
 } from "../issuer-simulator/airlockEngine.ts";
 import { generateDeviceKeyPair, signApproval, type DeviceKeyPair } from "../../packages/crypto/deviceKeys.ts";
 import { DurableStore } from "../../packages/storage/durableStore.ts";
+import {
+  SessionBoundary,
+  type BootstrapCredential,
+  type AuthenticatedSession,
+} from "../../packages/security/sessionBoundary.ts";
+import {
+  IdentityVerificationError,
+  OidcAccessTokenVerifier,
+  type OidcVerifierOptions,
+  type VerifiedIdentity,
+} from "../../packages/identity/oidcAccessTokenVerifier.ts";
+import { parseLaunchPolicy, type LaunchPolicy } from "../../packages/operations/launchPolicy.ts";
+import {
+  ServiceTelemetry,
+  type RequestClass,
+  type RequestOutcome,
+} from "../../packages/operations/serviceTelemetry.ts";
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "public");
+const DEFAULT_LAUNCH_POLICY_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../config/controlled-demo-slo.v1.json",
+);
+const STATIC_ASSET_NAMES = ["index.html", "app.js", "styles.css"] as const;
+const DEFAULT_BUILD_ID = "development-unversioned";
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;
 const LAB_SNAPSHOT_ID = "realtime-lab:simulator-state";
 const LAB_SNAPSHOT_STATUS = "active";
@@ -58,6 +81,9 @@ export const REASON_CODES = [
   "CHALLENGE_EXPIRED", "CHALLENGE_TERMINAL", "DEVICE_KEY_MISMATCH",
   "DEVICE_NOT_ACTIVE", "INVALID_STATE_TRANSITION", "CAP_EXCEEDED",
   "DOMAIN_REJECTED", "INTERNAL_ERROR", "RATE_LIMITED",
+  "AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED",
+  "CSRF_INVALID", "SESSION_LIMIT_REACHED", "TENANT_FORBIDDEN",
+  "SERVICE_OVERLOADED",
 ] as const;
 export type ReasonCode = typeof REASON_CODES[number];
 
@@ -264,6 +290,9 @@ function resolveClientKey(
 }
 
 export const REALTIME_LAB_API_ROUTES = Object.freeze({
+  sessionLogin: "/api/session/login",
+  sessionCurrent: "/api/session",
+  sessionLogout: "/api/session/logout",
   health: "/api/health",
   state: "/api/state",
   events: "/api/events",
@@ -317,6 +346,9 @@ export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = Object.freeze([
   exactRoute("app.js", "/app.js", ["GET", "HEAD"]),
   exactRoute("styles.css", "/styles.css", ["GET", "HEAD"]),
   exactRoute("health", REALTIME_LAB_API_ROUTES.health, ["GET", "HEAD"]),
+  exactRoute("sessionLogin", REALTIME_LAB_API_ROUTES.sessionLogin, ["POST"]),
+  exactRoute("sessionCurrent", REALTIME_LAB_API_ROUTES.sessionCurrent, ["GET", "HEAD"]),
+  exactRoute("sessionLogout", REALTIME_LAB_API_ROUTES.sessionLogout, ["POST"]),
   exactRoute("state", REALTIME_LAB_API_ROUTES.state, ["GET", "HEAD"]),
   exactRoute("events", REALTIME_LAB_API_ROUTES.events, ["GET"]),
   exactRoute("reset", REALTIME_LAB_API_ROUTES.reset, ["POST"]),
@@ -380,6 +412,35 @@ interface RequestIdempotency {
 }
 
 export interface CreateLabServerOptions {
+  /**
+   * Programmatic callers retain explicit simulator compatibility when omitted.
+   * Shared/CLI startup must set AIRLOCK_SIMULATOR_MODE=true or authenticated
+   * access configuration; the executable entry point fails closed otherwise.
+   */
+  access?: {
+    mode: "simulator";
+  } | {
+    mode: "authenticated";
+    identityProvider:
+      | {
+          type: "bootstrap-controlled-demo";
+          credentials: readonly BootstrapCredential[];
+        }
+      | {
+          type: "oidc";
+          /** Programmatic injection for tests or an externally composed verifier. */
+          verifier?: Pick<OidcAccessTokenVerifier, "verify">;
+          /** Serializable CLI configuration; mutually exclusive with verifier. */
+          options?: Omit<OidcVerifierOptions, "fetcher" | "clock" | "replayStore">;
+        };
+    allowedOrigins: readonly string[];
+    absoluteTtlMs?: number;
+    idleTtlMs?: number;
+    maxSessions?: number;
+    maxSessionsPerPrincipal?: number;
+    cookieSecure?: boolean;
+    allowInsecureTestOrigins?: boolean;
+  };
   dbPath?: string;
   /** Test-only dependency injection for deterministic storage failures. */
   storeFactory?: (path: string) => Pick<
@@ -400,6 +461,10 @@ export interface CreateLabServerOptions {
    * inject a controllable clock; production leaves it as `Date.now`.
    */
   clock?: () => number;
+  /** Bounded deployment identity; CLI startup sources AIRLOCK_BUILD_ID. */
+  buildId?: string;
+  /** Test-only static directory injection; files are snapshotted at composition. */
+  staticAssetDirectory?: string;
   /**
    * Socket peer addresses whose `X-Forwarded-For` is trusted. Empty by default,
    * so forwarding headers are ignored and the real peer address is used.
@@ -412,6 +477,13 @@ export interface CreateLabServerOptions {
   sseLimit?: SseLimitConfig | false;
   /** Test-only override for the SSE heartbeat interval (ms). */
   sseHeartbeatMs?: number;
+  /**
+   * Optional process-local, privacy-safe telemetry sink. When omitted the
+   * repository-controlled launch policy composes a default sink.
+   */
+  telemetry?: ServiceTelemetry;
+  /** Test-only/default-telemetry policy override. Ignored when telemetry is injected. */
+  telemetryPolicy?: LaunchPolicy;
 }
 
 class HttpError extends Error {
@@ -919,8 +991,119 @@ function rateLimited(res: ServerResponse, retryAfterSeconds: number): void {
   res.end(body);
 }
 
+function serviceOverloaded(res: ServerResponse, retryAfterSeconds: number): void {
+  const body = JSON.stringify({
+    code: "SERVICE_OVERLOADED" satisfies ReasonCode,
+    error: "Service admission is saturated. Retry after the indicated delay.",
+  });
+  res.writeHead(503, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "retry-after": String(Math.max(1, Math.trunc(retryAfterSeconds))),
+  });
+  res.end(body);
+}
+
+function cookieValue(req: IncomingMessage, name: string): string | undefined {
+  for (const pair of (req.headers.cookie ?? "").split(";")) {
+    const separator = pair.indexOf("=");
+    if (separator >= 0 && pair.slice(0, separator).trim() === name) {
+      try {
+        return decodeURIComponent(pair.slice(separator + 1).trim());
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function bearerToken(req: IncomingMessage): string | undefined {
+  const value = req.headers.authorization;
+  if (typeof value !== "string") return undefined;
+  return /^Bearer ([!-~]{32,4096})$/.exec(value)?.[1];
+}
+
 export function createLabServer(options: CreateLabServerOptions = {}) {
   const clock = options.clock ?? Date.now;
+  const telemetry = options.telemetry ?? new ServiceTelemetry(
+    options.telemetryPolicy ?? parseLaunchPolicy(JSON.parse(
+      readFileSync(DEFAULT_LAUNCH_POLICY_PATH, "utf8"),
+    )),
+    new Date(clock()),
+  );
+  const buildId = parseBuildId(options.buildId ?? process.env.AIRLOCK_BUILD_ID);
+  const assetDirectory = options.staticAssetDirectory ?? PUBLIC_DIR;
+  const staticAssets = new Map<string, Buffer>(
+    STATIC_ASSET_NAMES.map((name) => [
+      name,
+      Buffer.from(readFileSync(join(assetDirectory, name))),
+    ]),
+  );
+  const assetDigest = createHash("sha256");
+  for (const name of STATIC_ASSET_NAMES) {
+    const bytes = staticAssets.get(name)!;
+    assetDigest.update(name, "utf8");
+    assetDigest.update("\0");
+    assetDigest.update(String(bytes.length), "utf8");
+    assetDigest.update("\0");
+    assetDigest.update(bytes);
+  }
+  const staticAssetDigest = assetDigest.digest("hex");
+  const authenticatedAccess = options.access?.mode === "authenticated"
+    ? options.access
+    : undefined;
+  if (authenticatedAccess && options.dbPath) {
+    throw new Error("authenticated multi-tenant mode cannot use the single-tenant simulator database");
+  }
+  const identityProvider = authenticatedAccess?.identityProvider;
+  if (
+    authenticatedAccess &&
+    (!identityProvider ||
+      !["bootstrap-controlled-demo", "oidc"].includes(identityProvider.type))
+  ) {
+    throw new Error("authenticated mode requires one supported identity provider");
+  }
+  if (identityProvider?.type === "bootstrap-controlled-demo" && !identityProvider.credentials.length) {
+    throw new Error("controlled-demo bootstrap provider requires credentials");
+  }
+  if (
+    identityProvider?.type === "oidc" &&
+    Boolean(identityProvider.verifier) === Boolean(identityProvider.options)
+  ) {
+    throw new Error("OIDC provider requires exactly one of verifier or options");
+  }
+  const oidcVerifier = identityProvider?.type === "oidc"
+    ? identityProvider.verifier ??
+      new OidcAccessTokenVerifier(identityProvider.options!)
+    : undefined;
+  const sessionBoundary = authenticatedAccess
+    ? new SessionBoundary({
+      credentials: identityProvider?.type === "bootstrap-controlled-demo"
+        ? identityProvider.credentials
+        : [],
+      absoluteTtlMs: authenticatedAccess.absoluteTtlMs,
+      idleTtlMs: authenticatedAccess.idleTtlMs,
+      maxSessions: authenticatedAccess.maxSessions,
+      maxSessionsPerPrincipal: authenticatedAccess.maxSessionsPerPrincipal,
+      clock,
+    })
+    : undefined;
+  const allowedOrigins = new Set(authenticatedAccess?.allowedOrigins ?? []);
+  if (authenticatedAccess) {
+    if (!allowedOrigins.size) throw new Error("authenticated mode requires an origin allowlist");
+    for (const origin of allowedOrigins) {
+      const parsed = new URL(origin);
+      const insecureTestOrigin = authenticatedAccess.allowInsecureTestOrigins === true &&
+        parsed.protocol === "http:" &&
+        ["127.0.0.1", "localhost"].includes(parsed.hostname);
+      if (origin !== parsed.origin || (parsed.protocol !== "https:" && !insecureTestOrigin)) {
+        throw new Error("authenticated origins must be exact HTTPS origins");
+      }
+    }
+  }
+  const tenantStates = new Map<string, LabState>();
   const trustedProxies = new Set(
     (options.trustedProxies ?? []).map((proxy) => normalizeIp(proxy)).filter(Boolean),
   );
@@ -961,6 +1144,26 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
     persistentStore?.close();
     throw error;
   }
+  const dependencyReadiness = {
+    database: Boolean(persistentStore),
+    identityProvider: Boolean(identityProvider),
+    // No remote custody or partner transport adapter is composed in this lab.
+    auditCustody: false,
+    partnerTransport: false,
+  };
+  const publishReadiness = () => telemetry.setReadiness(dependencyReadiness);
+  publishReadiness();
+  const dependencyFailed = (dependency: keyof typeof dependencyReadiness) => {
+    dependencyReadiness[dependency] = false;
+    telemetry.recordDependencyFailure();
+    publishReadiness();
+  };
+  const dependencyRecovered = (
+    dependency: keyof typeof dependencyReadiness,
+  ) => {
+    dependencyReadiness[dependency] = true;
+    publishReadiness();
+  };
   const persist = () => {
     if (!persistentStore) return;
     if (persistedVersion === undefined) {
@@ -1067,14 +1270,17 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
   interface SseListener {
     res: ServerResponse;
     clientKey: string;
+    tenantId: string;
     heartbeat: ReturnType<typeof setInterval>;
     cleanup: () => void;
   }
   const listeners = new Set<SseListener>();
   const ssePerClient = new Map<string, number>();
-  const broadcast = () => {
+  const broadcast = (tenantId = "") => {
     const payload = `event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`;
-    for (const listener of listeners) listener.res.write(payload);
+    for (const listener of listeners) {
+      if (listener.tenantId === tenantId) listener.res.write(payload);
+    }
   };
   const succeed = (action: string, message: string, code: ReasonCode) => {
     state.lastResult = {
@@ -1101,29 +1307,229 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
 
   const server = createServer(async (req, res) => {
     applySecurityHeaders(res);
+    const requestStartedAt = clock();
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    const method = req.method ?? "GET";
+    const requestClass: RequestClass = url.pathname === REALTIME_LAB_API_ROUTES.events
+      ? "sse"
+      : method === "POST"
+      ? "mutation"
+      : url.pathname.startsWith("/api/")
+      ? "read"
+      : "static";
+    const admission = telemetry.enterRequest();
+    if (!admission.admitted) {
+      return serviceOverloaded(res, admission.retryAfterSeconds ?? 1);
+    }
+    let requestObservationComplete = false;
+    const completeRequestObservation = (
+      forcedOutcome?: RequestOutcome,
+      record = true,
+    ) => {
+      if (requestObservationComplete) return;
+      requestObservationComplete = true;
+      admission.release?.();
+      if (!record) return;
+      const outcome: RequestOutcome = forcedOutcome ??
+        (res.statusCode >= 500
+          ? "server_error"
+          : res.statusCode >= 400
+          ? "client_error"
+          : "success");
+      telemetry.recordRequest(
+        requestClass,
+        outcome,
+        Math.min(3_600_000, Math.max(0, clock() - requestStartedAt)),
+      );
+    };
+    res.once("finish", () => completeRequestObservation());
+    res.once("close", () => {
+      if (!res.writableFinished) completeRequestObservation("server_error");
+    });
+    let activeTenantId = "";
     let rollbackSnapshot: PersistedLabSnapshot | undefined;
     let idempotency: RequestIdempotency | undefined;
     const finalize = (status: number, body: unknown) => {
       const saved = persistResponse(idempotency, { status, body });
-      if (!saved.replayed) broadcast();
+      if (sessionBoundary) tenantStates.set(activeTenantId, state);
+      if (!saved.replayed) broadcast(activeTenantId);
       return json(res, saved.response.status, saved.response.body);
     };
     try {
-      const url = new URL(req.url ?? "/", "http://127.0.0.1");
-      const method = req.method ?? "GET";
+      const manifestEntry = findRouteManifestEntry(url.pathname);
+      if (manifestEntry && !manifestEntry.methods.includes(method)) {
+        return methodNotAllowed(res, method, manifestEntry.methods);
+      }
+      let activeSession: AuthenticatedSession | undefined;
+      if (
+        sessionBoundary &&
+        url.pathname === REALTIME_LAB_API_ROUTES.sessionLogin &&
+        method === "POST"
+      ) {
+        const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+        if (!allowedOrigins.has(origin)) {
+          return json(res, 403, {
+            code: "UNTRUSTED_ORIGIN",
+            error: "An exact allowed Origin is required.",
+          });
+        }
+        const token = bearerToken(req);
+        let session: AuthenticatedSession | undefined;
+        try {
+          if (token && identityProvider?.type === "bootstrap-controlled-demo") {
+            session = sessionBoundary.login(token);
+          } else if (token && identityProvider?.type === "oidc") {
+            const identity: VerifiedIdentity = await oidcVerifier!.verify(token);
+            dependencyRecovered("identityProvider");
+            session = sessionBoundary.issue({
+              principalId: identity.principalId,
+              tenantId: identity.tenantId,
+              roles: identity.roles,
+            }, identity.expiresAt * 1_000);
+          }
+        } catch (error) {
+          if (error instanceof Error && error.message === "session limit reached") {
+            return json(res, 429, {
+              code: "SESSION_LIMIT_REACHED",
+              error: "The bounded session limit has been reached.",
+            });
+          }
+          if (error instanceof IdentityVerificationError) {
+            if (
+              error.code === "jwks_unavailable" ||
+              error.code === "jwks_invalid"
+            ) {
+              dependencyFailed("identityProvider");
+            }
+            return json(res, 401, {
+              code: "AUTHENTICATION_FAILED",
+              error: "Authentication failed.",
+            });
+          }
+          if (
+            error instanceof Error &&
+              ["identity already expired", "invalid authenticated principal"].includes(
+                error.message,
+              )
+          ) {
+            return json(res, 401, {
+              code: "AUTHENTICATION_FAILED",
+              error: "Authentication failed.",
+            });
+          }
+          dependencyFailed("identityProvider");
+          throw error;
+        }
+        if (!session) {
+          return json(res, 401, {
+            code: "AUTHENTICATION_FAILED",
+            error: "Authentication failed.",
+          });
+        }
+        const secure = authenticatedAccess?.cookieSecure !== false;
+        res.setHeader(
+          "set-cookie",
+          `airlock_session=${encodeURIComponent(session.sessionId)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.max(1, Math.floor((session.expiresAt - clock()) / 1_000))}${secure ? "; Secure" : ""}`,
+        );
+        return json(res, 200, {
+          principal: session.principal,
+          csrfToken: session.csrfToken,
+          expiresAt: new Date(session.expiresAt).toISOString(),
+        });
+      }
+      if (
+        sessionBoundary &&
+        url.pathname.startsWith("/api/") &&
+        url.pathname !== REALTIME_LAB_API_ROUTES.health
+      ) {
+        const sessionId = cookieValue(req, "airlock_session");
+        activeSession = sessionId ? sessionBoundary.authenticate(sessionId) : undefined;
+        if (!activeSession) {
+          return json(res, 401, {
+            code: "AUTHENTICATION_REQUIRED",
+            error: "A valid authenticated session is required.",
+          });
+        }
+        activeTenantId = activeSession.principal.tenantId;
+        if (method === "POST") {
+          const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+          const csrf = typeof req.headers["x-csrf-token"] === "string"
+            ? req.headers["x-csrf-token"]
+            : undefined;
+          if (!allowedOrigins.has(origin) || !sessionBoundary.verifyCsrf(activeSession, csrf)) {
+            return json(res, 403, {
+              code: "CSRF_INVALID",
+              error: "CSRF validation failed.",
+            });
+          }
+        }
+        if (
+          url.pathname === REALTIME_LAB_API_ROUTES.sessionCurrent &&
+          (method === "GET" || method === "HEAD")
+        ) {
+          return json(res, 200, {
+            principal: activeSession.principal,
+            expiresAt: new Date(activeSession.expiresAt).toISOString(),
+          }, method);
+        }
+        if (
+          url.pathname === REALTIME_LAB_API_ROUTES.sessionLogout &&
+          method === "POST"
+        ) {
+          sessionBoundary.revoke(activeSession.sessionId);
+          res.setHeader(
+            "set-cookie",
+            "airlock_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+          );
+          return json(res, 200, { loggedOut: true });
+        }
+        const roles = activeSession.principal.roles;
+        const authorized = method === "POST"
+          ? roles.includes("operator")
+          : roles.includes("operator") || roles.includes("viewer");
+        if (!authorized) {
+          return json(res, 403, {
+            code: "TENANT_FORBIDDEN",
+            error: "The authenticated principal is not authorized for this operation.",
+          });
+        }
+        if (method !== "POST") {
+          state = tenantStates.get(activeTenantId) ?? freshState();
+          tenantStates.set(activeTenantId, state);
+        }
+      }
+      if (
+        !sessionBoundary &&
+        ([
+          REALTIME_LAB_API_ROUTES.sessionLogin,
+          REALTIME_LAB_API_ROUTES.sessionCurrent,
+          REALTIME_LAB_API_ROUTES.sessionLogout,
+        ] as readonly string[]).includes(url.pathname)
+      ) {
+        return json(res, 409, {
+          code: "DOMAIN_REJECTED",
+          error: "Session endpoints require authenticated access mode.",
+        }, method);
+      }
       // Manifest-driven 405 dispatch runs before ANY body read, idempotency
       // lookup, or rate-limit check: a wrong-method request to a known route
       // must be fully side-effect-free, exactly like the HEAD zero-body rule
       // below. An unrecognized path has no manifest entry and falls through
       // unchanged to the existing GET/HEAD-or-404 handling further down.
-      const manifestEntry = findRouteManifestEntry(url.pathname);
-      if (manifestEntry && !manifestEntry.methods.includes(method)) {
-        return methodNotAllowed(res, method, manifestEntry.methods);
-      }
       let requestBody: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       if (req.method === "POST" && url.pathname.startsWith("/api/")) {
-        enforceMutationSource(req);
+        // Authenticated mode already required an exact configured Origin plus
+        // the per-session CSRF secret above. Simulator mode retains its
+        // reflected same-origin/Host boundary for local browser use.
+        if (!sessionBoundary) enforceMutationSource(req);
         requestBody = await readBoundedBody(req);
+        if (sessionBoundary) {
+          // Select tenant state only after the last awaited body read. All
+          // state-machine work below is synchronous, preventing another
+          // request from switching the shared compatibility binding mid-use.
+          state = tenantStates.get(activeTenantId) ?? freshState();
+          tenantStates.set(activeTenantId, state);
+        }
         const canonicalBody = canonicalMutationBody(req, requestBody);
         idempotency = requestIdempotency(
           req,
@@ -1168,7 +1574,13 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         (req.method === "GET" || req.method === "HEAD") &&
         url.pathname === REALTIME_LAB_API_ROUTES.health
       ) {
-        return json(res, 200, { ok: true, simulator: true }, req.method);
+        return json(res, 200, {
+          ok: true,
+          simulator: true,
+          buildId,
+          staticAssetDigest,
+          service: telemetry.snapshot(new Date(clock())),
+        }, req.method);
       }
       if (
         (req.method === "GET" || req.method === "HEAD") &&
@@ -1187,12 +1599,18 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
             // Retry-After is advisory: streams free as clients disconnect.
             return rateLimited(res, 1);
           }
+          const sseAdmission = telemetry.enterSse();
+          if (!sseAdmission.admitted) {
+            completeRequestObservation(undefined, false);
+            return serviceOverloaded(res, sseAdmission.retryAfterSeconds ?? 1);
+          }
           res.writeHead(200, {
             "content-type": "text/event-stream",
             "cache-control": "no-store",
             connection: "keep-alive",
           });
           res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`);
+          completeRequestObservation("success");
           const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), sseHeartbeatMs);
           // Do not let the heartbeat timer keep the process alive on its own.
           heartbeat.unref?.();
@@ -1200,10 +1618,12 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           const listener: SseListener = {
             res,
             clientKey,
+            tenantId: activeTenantId,
             heartbeat,
             cleanup: () => {
               if (released) return; // idempotent: close AND error may both fire
               released = true;
+              sseAdmission.release?.();
               clearInterval(heartbeat);
               listeners.delete(listener);
               const next = (ssePerClient.get(clientKey) ?? 1) - 1;
@@ -1219,19 +1639,30 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           return;
         }
         // Unbounded mode (sseLimit disabled): original behavior with cleanup.
+        const sseAdmission = telemetry.enterSse();
+        if (!sseAdmission.admitted) {
+          completeRequestObservation(undefined, false);
+          return serviceOverloaded(res, sseAdmission.retryAfterSeconds ?? 1);
+        }
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-store",
           connection: "keep-alive",
         });
         res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`);
+        completeRequestObservation("success");
         const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), sseHeartbeatMs);
         heartbeat.unref?.();
+        let released = false;
         const listener: SseListener = {
           res,
           clientKey: "",
+          tenantId: activeTenantId,
           heartbeat,
           cleanup: () => {
+            if (released) return;
+            released = true;
+            sseAdmission.release?.();
             clearInterval(heartbeat);
             listeners.delete(listener);
           },
@@ -1434,10 +1865,10 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
       // so HEAD's contract does not apply there.
       if (req.method === "GET" || req.method === "HEAD") {
         const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-        if (!["index.html", "app.js", "styles.css"].includes(relative)) {
+        if (!STATIC_ASSET_NAMES.includes(relative as typeof STATIC_ASSET_NAMES[number])) {
           return json(res, 404, { code: "NOT_FOUND", error: "not found" }, req.method);
         }
-        const body = await readFile(join(PUBLIC_DIR, relative));
+        const body = staticAssets.get(relative)!;
         const types: Record<string, string> = {
           ".html": "text/html; charset=utf-8",
           ".js": "text/javascript; charset=utf-8",
@@ -1460,6 +1891,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         });
       }
       if (error instanceof PersistenceError) {
+        dependencyFailed("database");
         state = error.authoritativeState ??
           (rollbackSnapshot ? restoreLabState(rollbackSnapshot) : state);
         return json(res, error.status, {
@@ -1494,6 +1926,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         });
       } catch (persistError) {
         if (persistError instanceof PersistenceError) {
+          dependencyFailed("database");
           state = persistError.authoritativeState ??
             (rollbackSnapshot ? restoreLabState(rollbackSnapshot) : state);
           return json(res, persistError.status, {
@@ -1554,6 +1987,17 @@ export function parseRateLimitEnv(
   return { capacity, refillPerSecond, maxClients };
 }
 
+export function parseBuildId(raw: string | undefined): string {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_BUILD_ID;
+  const value = raw.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
+    throw new Error(
+      "AIRLOCK_BUILD_ID must be 1-64 characters: letters, digits, dot, underscore, or hyphen",
+    );
+  }
+  return value;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const host = process.env.AIRLOCK_HOST ?? "127.0.0.1";
   const port = Number(process.env.AIRLOCK_PORT ?? 8788);
@@ -1563,7 +2007,22 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     .split(",")
     .map((proxy) => proxy.trim())
     .filter(Boolean);
+  const simulatorMode = process.env.AIRLOCK_SIMULATOR_MODE === "true";
+  const authConfigPath = process.env.AIRLOCK_AUTH_CONFIG_PATH;
+  if (simulatorMode === Boolean(authConfigPath)) {
+    throw new Error(
+      "Set exactly one of AIRLOCK_SIMULATOR_MODE=true or AIRLOCK_AUTH_CONFIG_PATH; startup fails closed by default.",
+    );
+  }
+  const access: CreateLabServerOptions["access"] = simulatorMode
+    ? { mode: "simulator" }
+    : {
+      ...JSON.parse(readFileSync(authConfigPath!, "utf8")),
+      mode: "authenticated",
+    };
   createLabServer({
+    access,
+    buildId: process.env.AIRLOCK_BUILD_ID,
     ...(dbPath ? { dbPath } : {}),
     ...(rateLimit !== undefined ? { rateLimit } : {}),
     ...(trustedProxies.length ? { trustedProxies } : {}),

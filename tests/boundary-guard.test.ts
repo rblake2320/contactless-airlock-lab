@@ -57,6 +57,27 @@ test("guard fails when a non-test source references the test verifier", () => {
   }
 });
 
+test("guard resolves the production import graph through an intermediate re-export", () => {
+  const dir = fixture();
+  try {
+    writeFileSync(
+      join(dir, "packages", "credentials", "alias.ts"),
+      'export * from "./deterministicTestVerifier.ts";\n',
+    );
+    writeFileSync(
+      join(dir, "apps", "composition.ts"),
+      'import * as verifierBoundary from "../packages/credentials/alias.ts";\n' +
+        "export const selected = verifierBoundary;\n",
+    );
+    const r = runGuard(dir);
+    assert.equal(r.status, 1);
+    assert.match(r.stderr, /production import graph reaches test verifier/);
+    assert.match(r.stderr, /composition\.ts|alias\.ts/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("guard flags every forbidden token, not just the class name", () => {
   const dir = fixture();
   try {
@@ -91,8 +112,8 @@ for (const ext of [".js", ".mjs", ".cjs", ".cts", ".tsx", ".jsx", ".mts"]) {
   });
 }
 
-// DOCUMENTED LIMITATION (intentional, not a bug): the guard is a static
-// substring gate, not an adversarial control. An obfuscated dynamic import is
+// DOCUMENTED LIMITATION (intentional, not a bug): the guard is static source
+// and literal-import analysis, not an adversarial control. An obfuscated import is
 // NOT detected. This test pins that honest boundary so the guard is never
 // mistaken for a security sandbox — see docs/BOUNDARY_GUARD.md.
 test("guard does NOT catch an obfuscated dynamic import (known, documented gap)", () => {

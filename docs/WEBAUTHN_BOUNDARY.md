@@ -18,6 +18,19 @@ does not validate attestation, and provides no evidence of a hardware-backed
 credential. Production composition must make it impossible to select this
 class.
 
+`SimpleWebAuthnCredentialVerifier` is the production assertion-verification
+adapter. It is pinned to `@simplewebauthn/server` 13.3.2 and enforces the exact
+stored challenge, HTTPS origin allowlist (with localhost-only HTTP for local
+testing), RP ID/hash, active subject/device credential binding, ES256 policy,
+UP+UV flags, bounded canonical base64url fields, signature, and counter. Its
+tests create a standards-shaped P-256/COSE credential and independently sign
+the WebAuthn assertion bytes with Node's cryptographic implementation; they do
+not use the deterministic HMAC verifier.
+
+This adapter does **not** implement registration, validate an attestation
+statement or trust chain, establish hardware provenance, persist a new counter,
+or prove behavior on a real authenticator. Those remain separate gates below.
+
 ## Registration requirements
 
 A production registration ceremony must use a maintained, independently
@@ -130,3 +143,10 @@ controlled security telemetry correlated by opaque identifiers.
    revocation, recovery, backup/sync, and metadata-compromise scenarios.
 5. Complete issuer, wallet/TSP, privacy, accessibility, fraud, and independent
    application-security review before any pilot handles real payment data.
+
+The current assertion adapter accepts only
+`protocolVersion=airlock-webauthn.v1`, purpose
+`approve-airlock-challenge`, and a bounded canonical challenge identifier.
+Enrollment-purpose assertions and unknown versions fail closed before
+cryptographic verification. This adapter is still not wired into realtime
+session login or the standalone OIDC verifier.

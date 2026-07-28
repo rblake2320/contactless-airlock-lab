@@ -5,20 +5,15 @@
  * The DeterministicTestCredentialVerifier is a protocol test double (HMAC,
  * JSON-shaped authenticator data) and is NOT WebAuthn. Per
  * docs/WEBAUTHN_BOUNDARY.md the production composition must never select it.
- * This script is a cheap, static, dependency-free regression gate that catches
- * the realistic ACCIDENTAL case — a normal static import/reference of the test
- * double sneaking into a non-test source during refactoring.
+ * This script is a static, dependency-free regression gate that scans normal
+ * references and traverses literal static/dynamic relative imports from every
+ * production source.
  *
  * SCOPE / LIMITATION — read before trusting this for more than it is
  * (see docs/BOUNDARY_GUARD.md):
- *   - It does a SUBSTRING scan of source text. It does NOT parse the module
- *     graph, resolve imports, or evaluate code.
- *   - It therefore does NOT and CANNOT defeat a determined adversary: an
- *     obfuscated or dynamic import (string concatenation, a computed
- *     `import()`/`require()`, `eval`, or aliasing through a re-export) will
- *     slip past it. That is out of scope by design; the true production-grade
- *     control is a dependency-graph/allowlist check from the production entry
- *     points, noted as follow-up in docs/BOUNDARY_GUARD.md.
+ *   - It does not evaluate code. Obfuscated/computed import strings and eval
+ *     remain out of scope and are separately rejected by the token scan when
+ *     they name the known test-double symbols.
  *   - Its job is to fail CI on an honest mistake, not to sandbox a malicious
  *     author. Do not represent a green run here as proof the double is
  *     unreachable under adversarial conditions.
@@ -27,7 +22,7 @@
  * statically references the test double.
  */
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 
 // Scan root defaults to CWD; an explicit arg lets tests point at a fixture tree
 // so the guard is verifiable without mutating the shared worktree.
@@ -65,7 +60,12 @@ function walk(dir) {
 }
 
 const violations = [];
-for (const file of walk(ROOT)) {
+const productionFiles = walk(ROOT).filter(
+  (file) =>
+    file !==
+    resolve(ROOT, "packages", "credentials", "deterministicTestVerifier.ts"),
+);
+for (const file of productionFiles) {
   const rel = file.slice(ROOT.length + 1);
   if (ALLOWED_FILES.has(rel)) continue;
   const text = readFileSync(file, "utf8");
@@ -75,6 +75,56 @@ for (const file of walk(ROOT)) {
       violations.push(`${rel}:${line} references '${token}'`);
     }
   }
+}
+
+const TEST_DOUBLE = resolve(
+  ROOT,
+  "packages",
+  "credentials",
+  "deterministicTestVerifier.ts",
+);
+const IMPORT_PATTERN =
+  /(?:import|export)\s+(?:type\s+)?(?:[^"'()]*?\s+from\s+)?["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/g;
+const visited = new Set();
+
+function resolveRelativeImport(fromFile, specifier) {
+  if (!specifier.startsWith(".")) return undefined;
+  const base = resolve(dirname(fromFile), specifier);
+  for (const candidate of [
+    base,
+    `${base}.ts`,
+    base.replace(/\.js$/, ".ts"),
+    join(base, "index.ts"),
+  ]) {
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Try the next finite module-resolution candidate.
+    }
+  }
+  return undefined;
+}
+
+function walkImportGraph(file, chain) {
+  if (file === TEST_DOUBLE) {
+    violations.push(
+      `production import graph reaches test verifier: ${chain
+        .map((item) => item.slice(ROOT.length + 1))
+        .join(" -> ")}`,
+    );
+    return;
+  }
+  if (visited.has(file)) return;
+  visited.add(file);
+  const source = readFileSync(file, "utf8");
+  for (const match of source.matchAll(IMPORT_PATTERN)) {
+    const dependency = resolveRelativeImport(file, match[1] ?? match[2]);
+    if (dependency) walkImportGraph(dependency, [...chain, dependency]);
+  }
+}
+
+for (const entrypoint of productionFiles) {
+  walkImportGraph(entrypoint, [entrypoint]);
 }
 
 if (violations.length > 0) {

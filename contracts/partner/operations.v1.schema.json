@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:airlock:partner-transport:operations:v1",
+  "title": "Airlock partner transport operational views v1",
+  "oneOf": [
+    { "$ref": "#/$defs/metrics" },
+    { "$ref": "#/$defs/readiness" }
+  ],
+  "$defs": {
+    "counter": { "type": "integer", "minimum": 0 },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "generatedAt", "counters", "gauges"],
+      "properties": {
+        "schemaVersion": { "const": "airlock.partner-transport.metrics.v1" },
+        "generatedAt": { "type": "string", "format": "date-time" },
+        "counters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "claimedTotal", "deliveredTotal", "retryScheduledTotal",
+            "rejectedTotal", "signatureRejectedTotal", "replayRejectedTotal"
+          ],
+          "properties": {
+            "claimedTotal": { "$ref": "#/$defs/counter" },
+            "deliveredTotal": { "$ref": "#/$defs/counter" },
+            "retryScheduledTotal": { "$ref": "#/$defs/counter" },
+            "rejectedTotal": { "$ref": "#/$defs/counter" },
+            "signatureRejectedTotal": { "$ref": "#/$defs/counter" },
+            "replayRejectedTotal": { "$ref": "#/$defs/counter" }
+          }
+        },
+        "gauges": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["inFlight", "oldestPendingAgeSeconds"],
+          "properties": {
+            "inFlight": { "$ref": "#/$defs/counter" },
+            "oldestPendingAgeSeconds": { "type": "number", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "ready", "checks"],
+      "properties": {
+        "schemaVersion": { "const": "airlock.partner-transport.readiness.v1" },
+        "ready": { "type": "boolean" },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "signingKeyConfigured", "replayStoreReachable",
+            "outboxReachable", "partnerAdapterConfigured"
+          ],
+          "properties": {
+            "signingKeyConfigured": { "type": "boolean" },
+            "replayStoreReachable": { "type": "boolean" },
+            "outboxReachable": { "type": "boolean" },
+            "partnerAdapterConfigured": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  }
+}

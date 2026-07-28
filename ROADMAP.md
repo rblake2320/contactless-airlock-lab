@@ -45,6 +45,11 @@ promote simulator behavior into a production payment claim.
       `docs/BACKUP_RESTORE.md`; PITR/off-host/DR tracked in
       `docs/PRODUCTION_READINESS.md`).
 - [ ] PostgreSQL durable state and schema migrations
+- [x] Tenant-scoped PostgreSQL adapter contract for optimistic CAS,
+      idempotency, transactional outbox leasing, and cap reservations, with an
+      opt-in real multi-process test. The real database gate remains unrun
+      without `AIRLOCK_POSTGRES_URL`, so this does not close the item above
+      (`packages/storage/postgresStore.ts`, `tests/postgres-integration.test.ts`).
 - [x] The single-host realtime lab serializes challenge-state mutations through
       a versioned whole-snapshot SQLite compare-and-swap: a stale writer loses
       the swap, reloads authoritative state, and discards its in-memory
@@ -75,6 +80,15 @@ promote simulator behavior into a production payment claim.
 - [ ] Partner-agreed AsyncAPI event envelope, topics, payloads, transport,
       authentication, compatibility, and delivery policy
 - [ ] Authentication and signed webhook verification
+- [x] Authenticated realtime-lab profile with bounded, revocable, role- and
+      tenant-scoped sessions, exact Origin/CSRF enforcement, and mutually
+      exclusive controlled-demo bootstrap or strict OIDC/JWT identity-provider
+      composition. OIDC mode has no bootstrap fallback; distributed session and
+      replay storage remain open.
+- [x] Candidate partner-transport adapter with raw-body HMAC signing,
+      replay/idempotency enforcement, bounded timeout/retry/circuit breaking,
+      and durable dead-letter-before-acknowledgement tests. It is not a
+      partner-agreed or deployed webhook integration.
 - [x] Closed simulator-domain reason codes on every JSON error and public
       result, with OpenAPI/runtime enum parity and live rejection drift tests
 - [ ] Partner-agreed production reason-code mapping and privacy-safe
@@ -88,7 +102,16 @@ promote simulator behavior into a production payment claim.
 - [ ] Trusted-device web/mobile demonstration using WebAuthn
 - [x] WebAuthn credential-verifier boundary and deterministic negative-path
       test double, explicitly not integrated with the live lab
+- [x] Production WebAuthn assertion adapter using the pinned
+      `@simplewebauthn/server` implementation and real ES256/COSE fixtures,
+      with exact protocol, purpose, RP, origin, UV, counter, algorithm, and
+      challenge-ID rejection. Registration, attestation trust, hardware keys,
+      and live-lab composition remain open.
 - [ ] Fraud-operations and cardholder activity interfaces
+- [x] Synthetic customer/fraud operations state machine and evidence contract
+      covering device loss, strong-proof recovery, false declines, fraudulent
+      approvals, compromise, and dual-control trust reset. Production UI,
+      notification delivery, IAM/case integration, and named owners remain open.
 - [ ] Scenario controls for latency, duplication, outage, and reordering
 - [ ] Exportable evidence bundle for every partner demonstration
 
@@ -129,6 +152,15 @@ promote simulator behavior into a production payment claim.
       identity, deterministic stream cleanup); in-process, single-instance only
       — distributed/edge enforcement is external (`apps/realtime-lab/server.ts`,
       `tests/rate-limit.test.ts`, `docs/REALTIME_LAB_RATE_LIMIT.md`)
+- [x] Controlled-demo launch policy, privacy-safe bounded service telemetry,
+      SLO alert evaluation, incident/rollback runbook, and an opt-in 300-second
+      capacity gate that records build, hardware, concurrency, warm/cold, and
+      latency evidence. External metrics export, paging, distributed admission,
+      and a completed retained capacity run remain open.
+- [x] Runtime-coherent static assets and build identity: the server snapshots
+      frontend bytes at startup and reports a build ID plus asset digest, with
+      tests proving a running backend cannot silently mix with later on-disk
+      frontend changes.
 - [x] Bounded release-evidence generator records commit, lockfile digest,
       tool versions, normalized tests/scenarios, and simulator boundaries;
       explicitly unsigned and unattested

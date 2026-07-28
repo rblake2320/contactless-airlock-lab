@@ -48,8 +48,17 @@ function spawnConcurrentWriter(dbPath: string, count: number) {
   const done = new Promise<WriterResult>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(`writer did not finish: ${errors}`)), 20_000);
     child.on("error", reject);
+    let result: WriterResult | undefined;
     child.on("message", (message: WriterResult) => {
-      if (message.type === "done") { clearTimeout(timeout); resolve(message); }
+      if (message.type === "done") result = message;
+    });
+    child.on("close", (code) => {
+      clearTimeout(timeout);
+      if (code !== 0 || !result) {
+        reject(new Error(`writer exited before reporting completion (code ${code}): ${errors}`));
+        return;
+      }
+      resolve(result);
     });
   });
   return { child, ready, done, stderr: () => errors };
