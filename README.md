@@ -26,7 +26,12 @@ The lab does not claim to modify NFC, EMV kernels, Secure Elements, Apple Pay,
 Google Pay, or production payment rails. A later partner replaces simulator
 adapters with their authorized processor, issuer, TSP, or wallet interfaces.
 
-The browser lab is ephemeral by default. When `AIRLOCK_DB_PATH` is set, it
+The programmatic browser lab is ephemeral by default. CLI startup fails closed
+unless `AIRLOCK_SIMULATOR_MODE=true` explicitly selects the local simulator or
+`AIRLOCK_AUTH_CONFIG_PATH` selects authenticated tenant-isolated mode with one
+explicit `identityProvider`: `bootstrap-controlled-demo` for synthetic local
+use, or `oidc` with verifier options for signed access-token exchange. When
+`AIRLOCK_DB_PATH` is set in simulator mode, it
 persists a versioned simulator snapshot in SQLite using compare-and-swap
 updates and restores pending protocol work after restart. That mode deliberately
 stores an exportable synthetic demonstration key and is not a production key
@@ -58,11 +63,23 @@ revocation checks, and hash-chained audit log as the automated tests. It uses
 synthetic identifiers and does not connect to a card, wallet, bank, processor,
 terminal, or payment network.
 
-`packages/credentials` defines and tests the boundary a reviewed WebAuthn/FIDO2
-adapter must eventually satisfy. It is not wired into the live lab. Its
-deterministic HMAC verifier is test-only, is cryptographically not WebAuthn,
-and is mechanically barred from runtime imports by the default test suite.
+`packages/credentials` contains both a production-shaped WebAuthn assertion
+adapter backed by pinned `@simplewebauthn/server` code and a deterministic HMAC
+test double. The production adapter is exercised with real ES256/COSE fixtures,
+but registration, attestation trust, hardware-backed keys, and live-lab
+composition remain open. The HMAC verifier is test-only, is cryptographically
+not WebAuthn, and is mechanically barred from runtime imports by the default
+test suite.
 See [`docs/WEBAUTHN_BOUNDARY.md`](docs/WEBAUTHN_BOUNDARY.md).
+
+The repository also contains deliberately bounded, non-deployed adapter
+contracts for PostgreSQL durability, signed partner transport, remote audit-key
+custody, customer/fraud operations, privacy-safe service telemetry, and an
+opt-in controlled-demo capacity gate. Their exact evidence and remaining
+external dependencies are tracked in
+[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md); none substitutes
+for a real issuer, processor, wallet/TSP, identity provider, HSM/KMS, or
+certification environment.
 
 To exercise simulator-only restart persistence:
 

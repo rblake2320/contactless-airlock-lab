@@ -84,8 +84,25 @@ function render(state) {
   });
 }
 
-async function action(path, body) {
+// Render a state-less server rejection (HttpError / 429 rate-limit) as a real
+// Blocked decision. These bodies are {code, error} with NO `state`/`audit`, so
+// they must NEVER be handed to render() (which dereferences state.audit) and
+// must NEVER be mislabeled as a network error — they are understood server
+// responses, not transport failures.
+function showRejection(payload, status) {
+  $("result-title").textContent = "Blocked";
+  $("result-title").dataset.tone = "bad";
+  $("result-message").textContent = payload.error
+    ? `${payload.error} (${payload.code})`
+    : `Request rejected (${payload.code ?? "ERROR"}, HTTP ${status}).`;
+}
+
+async function action(path, body, trigger) {
+  // Suppress rapid re-entry (double-click / concurrent submit): one in-flight
+  // request at a time — distinct from disabling the initiating control below.
+  if (document.body.dataset.busy === "true") return;
   document.body.dataset.busy = "true";
+  if (trigger) trigger.disabled = true; // held disabled for the whole in-flight window
   const idempotency = idempotencyFor(path, body);
   try {
     const response = await fetch(path, {
@@ -105,26 +122,64 @@ async function action(path, body) {
     }
     delete pendingKeys[idempotency.identity];
     savePendingKeys();
-    render(payload.state ?? payload);
+    if (payload && payload.state) {
+      // A domain/persistence rejection that carries authoritative state.
+      render(payload.state);
+    } else if (payload && typeof payload.code === "string") {
+      // State-less rejection (429/400/413/415/428/431): show the real code and
+      // message. No render() runs and no state changed, so restore the (possibly
+      // capability-gated) initiating control to its pre-click enabled state.
+      showRejection(payload, response.status);
+      if (trigger) trigger.disabled = false;
+    } else {
+      // Success: the response is the public state snapshot itself.
+      render(payload);
+    }
   } catch (error) {
+    // Genuine transport failure only. No render() and no state change, so
+    // restore the initiating control.
     $("connection").textContent = "Connection error";
     $("result-title").textContent = "Network error";
     $("result-title").dataset.tone = "bad";
     $("result-message").textContent = error instanceof Error
       ? `The lab request did not complete: ${error.message}`
       : "The lab request did not complete. Check that the local server is running.";
+    if (trigger) trigger.disabled = false;
   } finally {
     delete document.body.dataset.busy;
+    // render() re-applies gating for [data-capability] controls; a trigger
+    // WITHOUT a capability (Reset lab, Tamper audit copy) is never managed by
+    // gating, so restore it on EVERY outcome or it stays disabled forever after
+    // its in-flight disable.
+    if (trigger && !trigger.hasAttribute?.("data-capability")) trigger.disabled = false;
   }
 }
 
 document.querySelectorAll("[data-action]").forEach((button) => {
-  button.addEventListener("click", () => action(button.dataset.action));
+  button.addEventListener("click", () => action(button.dataset.action, undefined, button));
 });
-$("request-transaction").addEventListener("click", () => action("/api/transaction/request", {
-  amount: $("amount").value,
-  merchantId: $("merchant").value,
-}));
+// A real <form> submit (not a bare click) is what makes the amount/merchant
+// inputs' native required/pattern/maxlength constraints actually run: the
+// browser blocks an invalid submit and shows its own validation UI before
+// this listener ever fires, with no JS-side re-validation, coercion, or
+// silent fallback layered on top. The server remains the sole authority —
+// these attributes only reject syntactically-invalid input earlier and more
+// accessibly; every value that does reach the server is still fully
+// re-validated there regardless of what the browser allowed through.
+$("transaction-request-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  // Return the promise so callers/tests can await the in-flight action.
+  return action("/api/transaction/request", {
+    amount: $("amount").value,
+    merchantId: $("merchant").value,
+  }, event.submitter ?? undefined);
+});
+
+// Announce connection-status changes (Connecting -> Live -> Reconnecting /
+// Connection error) to assistive tech. Set from script so the static HTML
+// stays owned by its lane. Optional-chained so a minimal/test DOM without
+// setAttribute does not throw at module load.
+$("connection")?.setAttribute?.("aria-live", "polite");
 
 const events = new EventSource("/api/events");
 events.addEventListener("state", (event) => {

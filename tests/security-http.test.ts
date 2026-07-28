@@ -148,7 +148,7 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
     value: string;
     addEventListener: (name: string, handler: () => Promise<void>) => void;
   }>();
-  let transactionHandler: (() => Promise<void>) | undefined;
+  let submitHandler: ((event: { preventDefault: () => void; submitter?: unknown }) => Promise<void>) | undefined;
   let requestHeaders: Record<string, string> | undefined;
   let uuidCalls = 0;
   const element = (id: string) => {
@@ -158,7 +158,7 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
         dataset: {},
         value: id === "amount" ? "25.00" : "merchant",
         addEventListener: (_name, handler) => {
-          if (id === "request-transaction") transactionHandler = handler;
+          if (id === "transaction-request-form") submitHandler = handler;
         },
       });
     }
@@ -173,7 +173,7 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
     new URL("../apps/realtime-lab/public/app.js", import.meta.url),
     "utf8",
   );
-  vm.runInNewContext(source, {
+  const context: Record<string, unknown> & { action?: (path: string, body?: unknown, trigger?: unknown) => Promise<void> } = {
     document: {
       body: { dataset: {} },
       getElementById: element,
@@ -191,9 +191,21 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
       },
     },
     console,
-  });
-  assert.ok(transactionHandler, "transaction click handler should be registered");
-  await transactionHandler();
+  };
+  vm.runInNewContext(source, context);
+  assert.ok(submitHandler, "transaction form submit handler should be registered");
+  let prevented = false;
+  submitHandler({ preventDefault: () => { prevented = true; }, submitter: undefined });
+  assert.ok(prevented, "form submit must synchronously call preventDefault (no real navigation)");
+  // `action()` is a top-level function declaration in app.js, so running the
+  // script attaches it directly to `context` (a plain script, not an ES
+  // module). The real submit listener fires it without awaiting the promise
+  // (harmless in a browser, which never awaits listener return values
+  // either) — so exercising it directly here, rather than through the
+  // listener, is what makes this test able to deterministically wait for
+  // the async failure path instead of racing it.
+  assert.equal(typeof context.action, "function", "action() should be reachable as a script global");
+  await context.action!("/api/transaction/request", { amount: "25.00", merchantId: "merchant" }, undefined);
   assert.equal(element("connection").textContent, "Connection error");
   assert.equal(element("result-title").textContent, "Network error");
   assert.match(element("result-message").textContent, /did not complete/);
@@ -201,6 +213,6 @@ test("browser surfaces a failed mutation instead of failing silently", async () 
     requestHeaders?.["idempotency-key"],
     "00000000-0000-4000-8000-000000000099",
   );
-  await transactionHandler();
+  await context.action!("/api/transaction/request", { amount: "25.00", merchantId: "merchant" }, undefined);
   assert.equal(uuidCalls, 1, "network retry must reuse the pending request key");
 });

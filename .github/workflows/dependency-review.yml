@@ -1,0 +1,38 @@
+name: Dependency review
+
+# Reviews dependency manifest/lockfile CHANGES introduced by a pull request
+# against GitHub Advisories and the license policy, at PR time. See
+# docs/DEPENDENCY_REVIEW_BOUNDARY.md for exactly what this does and does not do
+# (it is a PR-diff gate, not a runtime or deep-transitive scanner).
+
+on:
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airlock-dep-review-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review (high/critical fail)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          # Block the PR when a newly introduced dependency carries a known
+          # high or critical advisory. "high" is the lowest severity that fails.
+          fail-on-severity: high
+          # Advisory gate only in this workflow; license policy is intentionally
+          # not asserted here to avoid an unenforced/untested claim.
+          comment-summary-in-pr: on-failure

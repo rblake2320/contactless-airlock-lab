@@ -1,0 +1,71 @@
+{
+  "schemaVersion": "airlock.customer-fraud-operations.v1",
+  "status": "synthetic-reference-only",
+  "tenantScope": {
+    "requiredOn": ["case", "actor", "override", "audit event", "notification intent"],
+    "crossTenantAccess": "reject"
+  },
+  "caseTypes": {
+    "device_loss": {
+      "states": ["opened", "contained", "trust_reset_pending", "resolved", "cancelled"]
+    },
+    "account_recovery": {
+      "states": ["opened", "proof_verified", "trust_reset_pending", "resolved", "cancelled"],
+      "allowedProofMethods": [
+        "existing_passkey",
+        "in_person_strong_identity",
+        "bank_verified_strong_identity"
+      ],
+      "prohibitedProofMethods": ["SMS OTP", "email code", "typed transferable code"]
+    },
+    "false_decline_review": {
+      "states": ["opened", "under_review", "upheld", "overturned", "cancelled"]
+    },
+    "fraudulent_approval_dispute": {
+      "states": ["opened", "payment_frozen", "under_review", "upheld", "remediated", "cancelled"]
+    },
+    "compromise_response": {
+      "states": ["opened", "contained", "eradicated", "trust_reset_pending", "resolved"]
+    }
+  },
+  "destructiveTrustReset": {
+    "action": "destructive_trust_reset",
+    "approvalCount": 2,
+    "approversMustBeDistinct": true,
+    "authorizedRoles": ["security_operator", "supervisor", "recovery_officer"],
+    "affectedOrNewDeviceMayApprove": false,
+    "expiryRequired": true,
+    "execution": "automatic only after the second valid approval"
+  },
+  "audit": {
+    "appendOnly": true,
+    "hashChained": true,
+    "requiredImmutableFields": [
+      "tenantId", "caseId", "type", "actorId", "actorRole",
+      "reason", "correlationId", "occurredAt"
+    ],
+    "externalAuthentication": "not composed in this synthetic state machine"
+  },
+  "notifications": {
+    "behavior": "outbox intents only",
+    "topic": "operations.notification.requested",
+    "realDeliveryImplemented": false,
+    "realContactDataAllowed": false
+  },
+  "dataPolicy": {
+    "subjectReferencePattern": "^synthetic-",
+    "PANAllowed": false,
+    "realCustomerDataAllowed": false
+  },
+  "productionExternalGaps": [
+    "durable tenant-scoped case repository and atomic outbox transaction",
+    "workforce IAM, role source, separation-of-duties policy, and access reviews",
+    "real passkey/in-person/bank identity evidence adapters",
+    "issuer token-vault and device-trust reset adapter",
+    "case-management and fraud-platform integration",
+    "notification provider, consent, localization, and delivery receipts",
+    "authenticated external audit custody and independent anchor composition",
+    "retention, legal hold, dispute evidence, regulatory and privacy approval",
+    "operator UI, accessibility, escalation, queueing, and SLO monitoring"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "airlock.launch-policy.v1",
+  "profile": "controlled-single-user-demo",
+  "scope": {
+    "syntheticDataOnly": true,
+    "realPaymentTrafficAllowed": false,
+    "publicInternetAllowed": false,
+    "maximumTenants": 1
+  },
+  "traffic": {
+    "sustainedRequestsPerSecond": 100,
+    "burstRequestsPerSecond": 250,
+    "maximumConcurrentRequests": 128,
+    "maximumConcurrentSseStreams": 64,
+    "overloadStatus": 503,
+    "retryAfterSeconds": 1
+  },
+  "latencyMilliseconds": {
+    "readP95": 100,
+    "mutationP95": 250,
+    "completeSyntheticCycleP95": 500
+  },
+  "reliability": {
+    "minimumSuccessRatio": 0.999,
+    "measurementWindowSeconds": 300,
+    "minimumRequestsPerWindow": 1000
+  },
+  "dependencyTimeoutMilliseconds": {
+    "database": 2000,
+    "partnerApi": 3000,
+    "webhookConsumer": 3000
+  }
+}

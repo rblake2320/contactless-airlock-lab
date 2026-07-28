@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:airlock:partner:issuer-processor-webhook:v1",
+  "title": "Airlock issuer-to-processor webhook envelope v1",
+  "description": "Candidate integration contract. No processor has accepted or deployed this schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "eventId", "eventType", "occurredAt", "issuerId",
+    "processorId", "correlationId", "aggregateId", "payload"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "airlock.partner-webhook.v1" },
+    "eventId": { "type": "string", "format": "uuid" },
+    "eventType": {
+      "type": "string",
+      "enum": [
+        "authorization.provisional",
+        "authorization.confirmed",
+        "authorization.reversal_requested",
+        "authorization.clearing_exception"
+      ]
+    },
+    "occurredAt": { "type": "string", "format": "date-time" },
+    "issuerId": { "$ref": "#/$defs/identifier" },
+    "processorId": { "$ref": "#/$defs/identifier" },
+    "correlationId": { "$ref": "#/$defs/identifier" },
+    "aggregateId": { "$ref": "#/$defs/identifier" },
+    "payload": {
+      "type": "object",
+      "description": "Candidate event-type payload; exact fields still require processor agreement."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "eventType": { "const": "authorization.provisional" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/provisionalPayload" } } }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "authorization.confirmed" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/confirmedPayload" } } }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "authorization.reversal_requested" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/reversalPayload" } } }
+    },
+    {
+      "if": { "properties": { "eventType": { "const": "authorization.clearing_exception" } } },
+      "then": { "properties": { "payload": { "$ref": "#/$defs/clearingExceptionPayload" } } }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "canonicalTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "provisionalPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizationId", "tokenReference", "merchantId", "amountMinor",
+        "currency", "confirmationExpiresAt"
+      ],
+      "properties": {
+        "authorizationId": { "$ref": "#/$defs/identifier" },
+        "tokenReference": { "$ref": "#/$defs/identifier" },
+        "merchantId": { "$ref": "#/$defs/identifier" },
+        "amountMinor": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+        "currency": { "enum": ["USD", "EUR", "GBP", "CAD", "AUD"] },
+        "confirmationExpiresAt": { "$ref": "#/$defs/canonicalTime" }
+      }
+    },
+    "confirmedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorizationId", "confirmedAt"],
+      "properties": {
+        "authorizationId": { "$ref": "#/$defs/identifier" },
+        "confirmedAt": { "$ref": "#/$defs/canonicalTime" }
+      }
+    },
+    "reversalPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorizationId", "reason", "requestedAt"],
+      "properties": {
+        "authorizationId": { "$ref": "#/$defs/identifier" },
+        "reason": {
+          "enum": ["confirmation_timeout", "holder_declined", "risk_declined"]
+        },
+        "requestedAt": { "$ref": "#/$defs/canonicalTime" }
+      }
+    },
+    "clearingExceptionPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorizationId", "clearingReference", "detectedAt"],
+      "properties": {
+        "authorizationId": { "$ref": "#/$defs/identifier" },
+        "clearingReference": { "$ref": "#/$defs/identifier" },
+        "detectedAt": { "$ref": "#/$defs/canonicalTime" }
+      }
+    }
+  },
+  "x-contract-status": "candidate-unagreed",
+  "x-signature": {
+    "algorithm": "HMAC-SHA256",
+    "versionHeader": "X-Airlock-Version: v1",
+    "requiredHeaders": [
+      "Content-Type", "Idempotency-Key", "X-Airlock-Key-Id",
+      "X-Airlock-Nonce", "X-Airlock-Signature", "X-Airlock-Timestamp",
+      "X-Airlock-Version"
+    ],
+    "canonicalInput": "v1 + LF + timestamp_epoch_seconds + LF + nonce + LF + idempotency_key + LF + lowercase_hex_sha256(raw_body)",
+    "signatureEncoding": "v1=<lowercase hexadecimal HMAC>",
+    "minimumSecretBytes": 32,
+    "defaultReplayWindowSeconds": 300,
+    "maximumBodyBytes": 1048576
+  },
+  "x-delivery": {
+    "semantics": "at-least-once",
+    "idempotencyHeader": "Idempotency-Key",
+    "success": "any 2xx",
+    "retryable": ["429", "5xx", "transport failure"],
+    "permanentFailurePolicy": "not agreed; candidate dispatcher durably dead-letters non-retryable responses before acknowledging",
+    "retryBudget": "bounded and operator-configured; exhaustion requires durable dead-letter acceptance before acknowledgement",
+    "timeoutAndCircuitBreaker": "candidate dispatcher enforces an abortable request timeout shorter than its lease and opens a cooldown circuit after a bounded failure threshold",
+    "ordering": "not guaranteed",
+    "externalEndpointImplemented": false
+  }
+}

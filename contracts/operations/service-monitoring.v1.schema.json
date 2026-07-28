@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:airlock:service-monitoring:v1",
+  "title": "Privacy-safe Airlock service metrics",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "windowStartedAt", "generatedAt", "counters",
+    "latencyMilliseconds", "saturation", "readiness", "sampleCounts"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "airlock.service-metrics.v1" },
+    "windowStartedAt": { "type": "string", "format": "date-time" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestsTotal", "successfulRequestsTotal", "clientErrorsTotal",
+        "serverErrorsTotal", "overloadRejectionsTotal",
+        "dependencyFailuresTotal"
+      ],
+      "properties": {
+        "requestsTotal": { "$ref": "#/$defs/counter" },
+        "successfulRequestsTotal": { "$ref": "#/$defs/counter" },
+        "clientErrorsTotal": { "$ref": "#/$defs/counter" },
+        "serverErrorsTotal": { "$ref": "#/$defs/counter" },
+        "overloadRejectionsTotal": { "$ref": "#/$defs/counter" },
+        "dependencyFailuresTotal": { "$ref": "#/$defs/counter" }
+      }
+    },
+    "latencyMilliseconds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readP95", "mutationP95"],
+      "properties": {
+        "readP95": { "$ref": "#/$defs/nonNegative" },
+        "mutationP95": { "$ref": "#/$defs/nonNegative" }
+      }
+    },
+    "saturation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "currentRequests", "peakRequests",
+        "currentSseStreams", "peakSseStreams"
+      ],
+      "properties": {
+        "currentRequests": { "$ref": "#/$defs/counter" },
+        "peakRequests": { "$ref": "#/$defs/counter" },
+        "currentSseStreams": { "$ref": "#/$defs/counter" },
+        "peakSseStreams": { "$ref": "#/$defs/counter" }
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ready", "database", "identityProvider",
+        "auditCustody", "partnerTransport"
+      ],
+      "properties": {
+        "ready": { "type": "boolean" },
+        "database": { "type": "boolean" },
+        "identityProvider": { "type": "boolean" },
+        "auditCustody": { "type": "boolean" },
+        "partnerTransport": { "type": "boolean" }
+      }
+    },
+    "sampleCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readLatency", "mutationLatency"],
+      "properties": {
+        "readLatency": { "type": "integer", "minimum": 0, "maximum": 2048 },
+        "mutationLatency": { "type": "integer", "minimum": 0, "maximum": 2048 }
+      }
+    }
+  },
+  "$defs": {
+    "counter": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "nonNegative": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 3600000
+    }
+  },
+  "x-privacy": {
+    "labelsAllowed": false,
+    "prohibitedDimensions": [
+      "tenant", "principal", "subject", "device", "token", "merchant",
+      "authorization", "correlation", "IP address", "user agent"
+    ]
+  },
+  "x-runtime-wiring": {
+    "realtimeServerIntegrated": true,
+    "externalTelemetryExporterConfigured": false,
+    "externalPagerConfigured": false
+  }
+}

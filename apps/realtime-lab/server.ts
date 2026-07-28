@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
@@ -11,8 +11,31 @@ import {
 } from "../issuer-simulator/airlockEngine.ts";
 import { generateDeviceKeyPair, signApproval, type DeviceKeyPair } from "../../packages/crypto/deviceKeys.ts";
 import { DurableStore } from "../../packages/storage/durableStore.ts";
+import {
+  SessionBoundary,
+  type BootstrapCredential,
+  type AuthenticatedSession,
+} from "../../packages/security/sessionBoundary.ts";
+import {
+  IdentityVerificationError,
+  OidcAccessTokenVerifier,
+  type OidcVerifierOptions,
+  type VerifiedIdentity,
+} from "../../packages/identity/oidcAccessTokenVerifier.ts";
+import { parseLaunchPolicy, type LaunchPolicy } from "../../packages/operations/launchPolicy.ts";
+import {
+  ServiceTelemetry,
+  type RequestClass,
+  type RequestOutcome,
+} from "../../packages/operations/serviceTelemetry.ts";
 
 const PUBLIC_DIR = join(dirname(fileURLToPath(import.meta.url)), "public");
+const DEFAULT_LAUNCH_POLICY_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../config/controlled-demo-slo.v1.json",
+);
+const STATIC_ASSET_NAMES = ["index.html", "app.js", "styles.css"] as const;
+const DEFAULT_BUILD_ID = "development-unversioned";
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;
 const LAB_SNAPSHOT_ID = "realtime-lab:simulator-state";
 const LAB_SNAPSHOT_STATUS = "active";
@@ -57,11 +80,219 @@ export const REASON_CODES = [
   "UNKNOWN_DEMONSTRATION", "CHALLENGE_BINDING_MISMATCH",
   "CHALLENGE_EXPIRED", "CHALLENGE_TERMINAL", "DEVICE_KEY_MISMATCH",
   "DEVICE_NOT_ACTIVE", "INVALID_STATE_TRANSITION", "CAP_EXCEEDED",
-  "DOMAIN_REJECTED", "INTERNAL_ERROR",
+  "DOMAIN_REJECTED", "INTERNAL_ERROR", "RATE_LIMITED",
+  "AUTHENTICATION_REQUIRED", "AUTHENTICATION_FAILED",
+  "CSRF_INVALID", "SESSION_LIMIT_REACHED", "TENANT_FORBIDDEN",
+  "SERVICE_OVERLOADED",
 ] as const;
 export type ReasonCode = typeof REASON_CODES[number];
 
+// ---- Per-client mutation rate limiting (in-process, single-instance only) ----
+// SCOPE: a local abuse control for ONE simulator process. NOT distributed or
+// production enforcement — horizontal scaling, edge/CDN throttling, and
+// shared-state limiting (Redis, API gateway) are explicitly left EXTERNAL.
+// See docs/REALTIME_LAB_RATE_LIMIT.md.
+export interface RateLimitConfig {
+  /** Bucket capacity = maximum burst of mutations a client may make at once. */
+  capacity: number;
+  /** Sustained refill rate in tokens per second. */
+  refillPerSecond: number;
+  /** Hard cap on tracked client buckets (memory bound); LRU-evicted past it. */
+  maxClients: number;
+}
+
+const DEFAULT_RATE_LIMIT: RateLimitConfig = Object.freeze({
+  // Generous defaults: invisible to functional use, still a real abuse ceiling.
+  capacity: 300,
+  refillPerSecond: 150,
+  maxClients: 10_000,
+});
+
+// ---- SSE connection bounding (in-process, single-instance only) ----
+// Long-lived `GET /api/events` streams each pin a socket and a heartbeat timer.
+// Without a bound, one client can open unbounded streams and exhaust sockets/
+// memory. These caps are per-process; distributed/edge connection limits remain
+// external. See docs/REALTIME_LAB_RATE_LIMIT.md.
+export interface SseLimitConfig {
+  /** Max concurrent event streams from a single client identity. */
+  maxPerClient: number;
+  /** Max concurrent event streams across all clients. */
+  maxTotal: number;
+}
+
+const DEFAULT_SSE_LIMIT: SseLimitConfig = Object.freeze({
+  maxPerClient: 4,
+  maxTotal: 64,
+});
+
+// Heartbeat comment interval for SSE keep-alive (ms). Overridable for tests.
+const DEFAULT_SSE_HEARTBEAT_MS = 15_000;
+
+interface Bucket {
+  tokens: number;
+  updatedMs: number;
+}
+
+export interface RateLimitDecision {
+  allowed: boolean;
+  /** Seconds until a token frees (>=1); only meaningful when blocked. */
+  retryAfterSeconds: number;
+}
+
+/**
+ * Token-bucket limiter keyed by client identity. Deterministic under an injected
+ * clock. Backed by a Map used as an LRU (re-insertion moves a key to the tail;
+ * eviction drops the head) so memory is bounded by `maxClients`.
+ */
+export class MutationRateLimiter {
+  readonly #buckets = new Map<string, Bucket>();
+  readonly #config: RateLimitConfig;
+  readonly #clock: () => number;
+
+  constructor(config: RateLimitConfig, clock: () => number) {
+    if (
+      !Number.isFinite(config.capacity) || config.capacity < 1 ||
+      !Number.isFinite(config.refillPerSecond) || config.refillPerSecond <= 0 ||
+      !Number.isInteger(config.maxClients) || config.maxClients < 1
+    ) {
+      throw new Error("invalid rate-limit configuration");
+    }
+    this.#config = config;
+    this.#clock = clock;
+  }
+
+  #admissionRejections = 0;
+
+  /** Synchronously (atomically) attempt to consume one token for `clientKey`. */
+  take(clientKey: string): RateLimitDecision {
+    const now = this.#clock();
+    const { capacity, refillPerSecond, maxClients } = this.#config;
+    const existing = this.#buckets.get(clientKey);
+
+    // New client at capacity: apply bounded, fail-closed admission control that
+    // NEVER refunds tokens to a penalized bucket. Evicting a bucket that has
+    // spent tokens and re-creating it fresh (full capacity) would let attacker-
+    // controlled identity churn wipe a victim's active penalty. So we only evict
+    // a fully-refilled bucket; if none exists, we reject the NEW identity without
+    // allocating (the table never grows past maxClients and no penalty is lost).
+    if (!existing && this.#buckets.size >= maxClients) {
+      const evictable = this.#findEvictableFullBucket(now);
+      if (evictable === undefined) {
+        this.#admissionRejections += 1;
+        return {
+          allowed: false,
+          retryAfterSeconds: Math.max(1, Math.ceil(1 / refillPerSecond)),
+        };
+      }
+      this.#buckets.delete(evictable);
+    }
+
+    // Refresh LRU position: delete now, re-insert at tail below.
+    if (existing) this.#buckets.delete(clientKey);
+    const bucket: Bucket = existing ?? { tokens: capacity, updatedMs: now };
+    const elapsedSec = Math.max(0, (now - bucket.updatedMs) / 1000);
+    bucket.tokens = Math.min(capacity, bucket.tokens + elapsedSec * refillPerSecond);
+    bucket.updatedMs = now;
+
+    let decision: RateLimitDecision;
+    if (bucket.tokens >= 1) {
+      bucket.tokens -= 1;
+      decision = { allowed: true, retryAfterSeconds: 0 };
+    } else {
+      const deficit = 1 - bucket.tokens;
+      decision = {
+        allowed: false,
+        retryAfterSeconds: Math.max(1, Math.ceil(deficit / refillPerSecond)),
+      };
+    }
+    this.#buckets.set(clientKey, bucket);
+    return decision;
+  }
+
+  /**
+   * Oldest-first scan (Map iteration order = insertion/LRU order) for a bucket
+   * that has fully refilled at `now`. Such a bucket carries no penalty, so
+   * evicting it and letting the owner re-create it later is a no-op — safe.
+   * A partially-drained ("penalized") bucket is never returned, so churn cannot
+   * refund it. Returns the client key to evict, or undefined if none is safe.
+   */
+  #findEvictableFullBucket(now: number): string | undefined {
+    const { capacity, refillPerSecond } = this.#config;
+    for (const [key, bucket] of this.#buckets) {
+      const elapsedSec = Math.max(0, (now - bucket.updatedMs) / 1000);
+      const refilled = Math.min(capacity, bucket.tokens + elapsedSec * refillPerSecond);
+      if (refilled >= capacity) return key;
+    }
+    return undefined;
+  }
+
+  /** Introspection helper: number of tracked client buckets. */
+  get trackedClients(): number {
+    return this.#buckets.size;
+  }
+
+  /** Introspection helper: count of new identities refused by admission control. */
+  get admissionRejections(): number {
+    return this.#admissionRejections;
+  }
+}
+
+/** Normalize an IP: strip IPv6 zone id, unwrap v4-mapped IPv6, lowercase. */
+function normalizeIp(raw: string): string {
+  let ip = raw.trim().toLowerCase();
+  if (!ip) return "";
+  const zone = ip.indexOf("%");
+  if (zone >= 0) ip = ip.slice(0, zone);
+  if (ip.startsWith("::ffff:") && ip.includes(".")) ip = ip.slice("::ffff:".length);
+  return ip;
+}
+
+/** Bucket key for an address: IPv4 -> exact; IPv6 -> /64 prefix (first 4 groups). */
+function addressBucketKey(ip: string): string {
+  if (!ip) return "unknown";
+  if (ip.includes(":")) {
+    const [head, tail = ""] = ip.split("::", 2);
+    const headGroups = head ? head.split(":") : [];
+    const tailGroups = tail ? tail.split(":") : [];
+    const missing = 8 - headGroups.length - tailGroups.length;
+    const groups = ip.includes("::")
+      ? [...headGroups, ...Array(Math.max(0, missing)).fill("0"), ...tailGroups]
+      : ip.split(":");
+    return "v6:" + groups.slice(0, 4).map((g) => g || "0").join(":") + "::/64";
+  }
+  return "v4:" + ip;
+}
+
+/**
+ * Resolve the client identity used for rate limiting. Forwarding headers are
+ * trusted ONLY when the direct socket peer is in `trustedProxies`; otherwise a
+ * spoofed X-Forwarded-For is ignored and the real peer address is used. With a
+ * trusted proxy present we take the right-most chain address that is not itself
+ * a trusted proxy (the client as seen by the outermost trusted hop).
+ */
+function resolveClientKey(
+  req: IncomingMessage,
+  trustedProxies: ReadonlySet<string>,
+): string {
+  const peer = normalizeIp(req.socket?.remoteAddress ?? "");
+  if (trustedProxies.size === 0 || !trustedProxies.has(peer)) {
+    return addressBucketKey(peer);
+  }
+  const forwarded = req.headers["x-forwarded-for"];
+  const header = Array.isArray(forwarded) ? forwarded.join(",") : forwarded;
+  if (typeof header === "string" && header.length > 0) {
+    const chain = header.split(",").map((part) => normalizeIp(part)).filter(Boolean);
+    for (let i = chain.length - 1; i >= 0; i -= 1) {
+      if (!trustedProxies.has(chain[i])) return addressBucketKey(chain[i]);
+    }
+  }
+  return addressBucketKey(peer);
+}
+
 export const REALTIME_LAB_API_ROUTES = Object.freeze({
+  sessionLogin: "/api/session/login",
+  sessionCurrent: "/api/session",
+  sessionLogout: "/api/session/logout",
   health: "/api/health",
   state: "/api/state",
   events: "/api/events",
@@ -77,6 +308,65 @@ export const REALTIME_LAB_API_ROUTES = Object.freeze({
   auditTamper: "/api/demonstrate/audit-tamper",
   demonstrationPrefix: "/api/demonstrate/",
 });
+
+export interface RouteManifestEntry {
+  readonly label: string;
+  /** The exact path, or the prefix, this entry was declared with — kept for
+   *  introspection (parity tests) separately from `matches`, which is what
+   *  the dispatcher itself actually calls. */
+  readonly path: string;
+  readonly isPrefix: boolean;
+  readonly methods: readonly string[];
+  readonly matches: (pathname: string) => boolean;
+}
+
+function exactRoute(label: string, path: string, methods: readonly string[]): RouteManifestEntry {
+  return { label, path, isPrefix: false, methods, matches: (pathname) => pathname === path };
+}
+
+function prefixRoute(label: string, prefix: string, methods: readonly string[]): RouteManifestEntry {
+  return { label, path: prefix, isPrefix: true, methods, matches: (pathname) => pathname.startsWith(prefix) };
+}
+
+/**
+ * Every route this server recognizes, with the exact method set each one
+ * accepts. This is the single source of truth for both HEAD support and
+ * 405 dispatch below — a route's allowed methods are declared here once,
+ * not duplicated across handler `if` conditions, so `Allow` headers and
+ * actual handler behavior cannot independently drift from each other.
+ *
+ * `/api/events` intentionally omits HEAD (see docs/HEAD_REQUESTS.md: an
+ * open-ended SSE stream has no fixed body for HEAD to describe). Exact
+ * entries are listed before the `/api/demonstrate/` prefix entry so a
+ * lookup by array order finds the more specific match first, though today
+ * both resolve to the same POST-only method set either way.
+ */
+export const ROUTE_MANIFEST: readonly RouteManifestEntry[] = Object.freeze([
+  exactRoute("root", "/", ["GET", "HEAD"]),
+  exactRoute("app.js", "/app.js", ["GET", "HEAD"]),
+  exactRoute("styles.css", "/styles.css", ["GET", "HEAD"]),
+  exactRoute("health", REALTIME_LAB_API_ROUTES.health, ["GET", "HEAD"]),
+  exactRoute("sessionLogin", REALTIME_LAB_API_ROUTES.sessionLogin, ["POST"]),
+  exactRoute("sessionCurrent", REALTIME_LAB_API_ROUTES.sessionCurrent, ["GET", "HEAD"]),
+  exactRoute("sessionLogout", REALTIME_LAB_API_ROUTES.sessionLogout, ["POST"]),
+  exactRoute("state", REALTIME_LAB_API_ROUTES.state, ["GET", "HEAD"]),
+  exactRoute("events", REALTIME_LAB_API_ROUTES.events, ["GET"]),
+  exactRoute("reset", REALTIME_LAB_API_ROUTES.reset, ["POST"]),
+  exactRoute("provisionRequest", REALTIME_LAB_API_ROUTES.provisionRequest, ["POST"]),
+  exactRoute("provisionAttack", REALTIME_LAB_API_ROUTES.provisionAttack, ["POST"]),
+  exactRoute("provisionApprove", REALTIME_LAB_API_ROUTES.provisionApprove, ["POST"]),
+  exactRoute("deviceRevoke", REALTIME_LAB_API_ROUTES.deviceRevoke, ["POST"]),
+  exactRoute("transactionRequest", REALTIME_LAB_API_ROUTES.transactionRequest, ["POST"]),
+  exactRoute("transactionConfirm", REALTIME_LAB_API_ROUTES.transactionConfirm, ["POST"]),
+  exactRoute("transactionExpire", REALTIME_LAB_API_ROUTES.transactionExpire, ["POST"]),
+  exactRoute("transactionClear", REALTIME_LAB_API_ROUTES.transactionClear, ["POST"]),
+  exactRoute("auditTamper", REALTIME_LAB_API_ROUTES.auditTamper, ["POST"]),
+  prefixRoute("demonstration", REALTIME_LAB_API_ROUTES.demonstrationPrefix, ["POST"]),
+]);
+
+export function findRouteManifestEntry(pathname: string): RouteManifestEntry | undefined {
+  return ROUTE_MANIFEST.find((entry) => entry.matches(pathname));
+}
 
 interface LabState {
   engine: AirlockEngine;
@@ -122,6 +412,35 @@ interface RequestIdempotency {
 }
 
 export interface CreateLabServerOptions {
+  /**
+   * Programmatic callers retain explicit simulator compatibility when omitted.
+   * Shared/CLI startup must set AIRLOCK_SIMULATOR_MODE=true or authenticated
+   * access configuration; the executable entry point fails closed otherwise.
+   */
+  access?: {
+    mode: "simulator";
+  } | {
+    mode: "authenticated";
+    identityProvider:
+      | {
+          type: "bootstrap-controlled-demo";
+          credentials: readonly BootstrapCredential[];
+        }
+      | {
+          type: "oidc";
+          /** Programmatic injection for tests or an externally composed verifier. */
+          verifier?: Pick<OidcAccessTokenVerifier, "verify">;
+          /** Serializable CLI configuration; mutually exclusive with verifier. */
+          options?: Omit<OidcVerifierOptions, "fetcher" | "clock" | "replayStore">;
+        };
+    allowedOrigins: readonly string[];
+    absoluteTtlMs?: number;
+    idleTtlMs?: number;
+    maxSessions?: number;
+    maxSessionsPerPrincipal?: number;
+    cookieSecure?: boolean;
+    allowInsecureTestOrigins?: boolean;
+  };
   dbPath?: string;
   /** Test-only dependency injection for deterministic storage failures. */
   storeFactory?: (path: string) => Pick<
@@ -132,6 +451,39 @@ export interface CreateLabServerOptions {
   faultInjector?: (action: string) => void;
   /** Test-only verifier substitution for exercising the fail-closed invariant. */
   auditCopyVerifier?: typeof verifyAuditCopy;
+  /**
+   * Per-client mutation rate limit. Omit for the generous default; pass `false`
+   * to disable enforcement entirely; pass a config to override.
+   */
+  rateLimit?: RateLimitConfig | false;
+  /**
+   * Deterministic monotonic-ish clock (ms epoch) for the rate limiter. Tests
+   * inject a controllable clock; production leaves it as `Date.now`.
+   */
+  clock?: () => number;
+  /** Bounded deployment identity; CLI startup sources AIRLOCK_BUILD_ID. */
+  buildId?: string;
+  /** Test-only static directory injection; files are snapshotted at composition. */
+  staticAssetDirectory?: string;
+  /**
+   * Socket peer addresses whose `X-Forwarded-For` is trusted. Empty by default,
+   * so forwarding headers are ignored and the real peer address is used.
+   */
+  trustedProxies?: readonly string[];
+  /**
+   * Concurrent `GET /api/events` stream caps. Omit for the default; pass `false`
+   * to disable SSE connection bounding entirely; pass a config to override.
+   */
+  sseLimit?: SseLimitConfig | false;
+  /** Test-only override for the SSE heartbeat interval (ms). */
+  sseHeartbeatMs?: number;
+  /**
+   * Optional process-local, privacy-safe telemetry sink. When omitted the
+   * repository-controlled launch policy composes a default sink.
+   */
+  telemetry?: ServiceTelemetry;
+  /** Test-only/default-telemetry policy override. Ignored when telemetry is injected. */
+  telemetryPolicy?: LaunchPolicy;
 }
 
 class HttpError extends Error {
@@ -578,17 +930,186 @@ function publicSnapshot(state: LabState) {
   };
 }
 
-function json(res: ServerResponse, status: number, value: unknown) {
+/**
+ * `method` defaults to "GET" so every existing call site is unaffected.
+ * Passing "HEAD" keeps status/headers — including a Content-Length that
+ * matches what the equivalent GET would have sent — but writes no body, per
+ * RFC 7231 §4.3.2. Only the routes that actually accept HEAD (see the
+ * root/static handler below) ever pass "HEAD" through.
+ */
+function json(
+  res: ServerResponse,
+  status: number,
+  value: unknown,
+  method: string = "GET",
+  extraHeaders?: Record<string, string>,
+) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "content-length": Buffer.byteLength(body),
     "cache-control": "no-store",
+    ...extraHeaders,
+  });
+  res.end(method === "HEAD" ? undefined : body);
+}
+
+/**
+ * 405 for a route the manifest recognizes but not with this method. `Allow`
+ * lists exactly the manifest's methods for that route — never a generic or
+ * hand-maintained list — so it cannot drift from what the dispatcher itself
+ * enforces. Emitted before any body read/idempotency/rate-limit handling so
+ * a 405 is always side-effect-free, matching HEAD's zero-body rule too.
+ */
+function methodNotAllowed(res: ServerResponse, method: string, allowedMethods: readonly string[]): void {
+  json(
+    res,
+    405,
+    { code: "METHOD_NOT_ALLOWED", error: `${method} is not allowed on this route.` },
+    method,
+    { allow: allowedMethods.join(", ") },
+  );
+}
+
+/**
+ * 429 rejection with a SimpleError body and a Retry-After header. Emitted before
+ * any state snapshot so the rejected mutation leaves state untouched and is
+ * never persisted as an idempotent response.
+ */
+function rateLimited(res: ServerResponse, retryAfterSeconds: number): void {
+  const body = JSON.stringify({
+    code: "RATE_LIMITED" satisfies ReasonCode,
+    error: "Too many mutation requests from this client. Retry after the " +
+      "indicated delay. (SIMULATOR: in-process single-instance limiter only.)",
+  });
+  res.writeHead(429, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "retry-after": String(Math.max(1, Math.trunc(retryAfterSeconds))),
   });
   res.end(body);
 }
 
+function serviceOverloaded(res: ServerResponse, retryAfterSeconds: number): void {
+  const body = JSON.stringify({
+    code: "SERVICE_OVERLOADED" satisfies ReasonCode,
+    error: "Service admission is saturated. Retry after the indicated delay.",
+  });
+  res.writeHead(503, {
+    "content-type": "application/json; charset=utf-8",
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+    "retry-after": String(Math.max(1, Math.trunc(retryAfterSeconds))),
+  });
+  res.end(body);
+}
+
+function cookieValue(req: IncomingMessage, name: string): string | undefined {
+  for (const pair of (req.headers.cookie ?? "").split(";")) {
+    const separator = pair.indexOf("=");
+    if (separator >= 0 && pair.slice(0, separator).trim() === name) {
+      try {
+        return decodeURIComponent(pair.slice(separator + 1).trim());
+      } catch {
+        return undefined;
+      }
+    }
+  }
+  return undefined;
+}
+
+function bearerToken(req: IncomingMessage): string | undefined {
+  const value = req.headers.authorization;
+  if (typeof value !== "string") return undefined;
+  return /^Bearer ([!-~]{32,4096})$/.exec(value)?.[1];
+}
+
 export function createLabServer(options: CreateLabServerOptions = {}) {
+  const clock = options.clock ?? Date.now;
+  const telemetry = options.telemetry ?? new ServiceTelemetry(
+    options.telemetryPolicy ?? parseLaunchPolicy(JSON.parse(
+      readFileSync(DEFAULT_LAUNCH_POLICY_PATH, "utf8"),
+    )),
+    new Date(clock()),
+  );
+  const buildId = parseBuildId(options.buildId ?? process.env.AIRLOCK_BUILD_ID);
+  const assetDirectory = options.staticAssetDirectory ?? PUBLIC_DIR;
+  const staticAssets = new Map<string, Buffer>(
+    STATIC_ASSET_NAMES.map((name) => [
+      name,
+      Buffer.from(readFileSync(join(assetDirectory, name))),
+    ]),
+  );
+  const assetDigest = createHash("sha256");
+  for (const name of STATIC_ASSET_NAMES) {
+    const bytes = staticAssets.get(name)!;
+    assetDigest.update(name, "utf8");
+    assetDigest.update("\0");
+    assetDigest.update(String(bytes.length), "utf8");
+    assetDigest.update("\0");
+    assetDigest.update(bytes);
+  }
+  const staticAssetDigest = assetDigest.digest("hex");
+  const authenticatedAccess = options.access?.mode === "authenticated"
+    ? options.access
+    : undefined;
+  if (authenticatedAccess && options.dbPath) {
+    throw new Error("authenticated multi-tenant mode cannot use the single-tenant simulator database");
+  }
+  const identityProvider = authenticatedAccess?.identityProvider;
+  if (
+    authenticatedAccess &&
+    (!identityProvider ||
+      !["bootstrap-controlled-demo", "oidc"].includes(identityProvider.type))
+  ) {
+    throw new Error("authenticated mode requires one supported identity provider");
+  }
+  if (identityProvider?.type === "bootstrap-controlled-demo" && !identityProvider.credentials.length) {
+    throw new Error("controlled-demo bootstrap provider requires credentials");
+  }
+  if (
+    identityProvider?.type === "oidc" &&
+    Boolean(identityProvider.verifier) === Boolean(identityProvider.options)
+  ) {
+    throw new Error("OIDC provider requires exactly one of verifier or options");
+  }
+  const oidcVerifier = identityProvider?.type === "oidc"
+    ? identityProvider.verifier ??
+      new OidcAccessTokenVerifier(identityProvider.options!)
+    : undefined;
+  const sessionBoundary = authenticatedAccess
+    ? new SessionBoundary({
+      credentials: identityProvider?.type === "bootstrap-controlled-demo"
+        ? identityProvider.credentials
+        : [],
+      absoluteTtlMs: authenticatedAccess.absoluteTtlMs,
+      idleTtlMs: authenticatedAccess.idleTtlMs,
+      maxSessions: authenticatedAccess.maxSessions,
+      maxSessionsPerPrincipal: authenticatedAccess.maxSessionsPerPrincipal,
+      clock,
+    })
+    : undefined;
+  const allowedOrigins = new Set(authenticatedAccess?.allowedOrigins ?? []);
+  if (authenticatedAccess) {
+    if (!allowedOrigins.size) throw new Error("authenticated mode requires an origin allowlist");
+    for (const origin of allowedOrigins) {
+      const parsed = new URL(origin);
+      const insecureTestOrigin = authenticatedAccess.allowInsecureTestOrigins === true &&
+        parsed.protocol === "http:" &&
+        ["127.0.0.1", "localhost"].includes(parsed.hostname);
+      if (origin !== parsed.origin || (parsed.protocol !== "https:" && !insecureTestOrigin)) {
+        throw new Error("authenticated origins must be exact HTTPS origins");
+      }
+    }
+  }
+  const tenantStates = new Map<string, LabState>();
+  const trustedProxies = new Set(
+    (options.trustedProxies ?? []).map((proxy) => normalizeIp(proxy)).filter(Boolean),
+  );
+  const rateLimiter = options.rateLimit === false
+    ? undefined
+    : new MutationRateLimiter(options.rateLimit ?? DEFAULT_RATE_LIMIT, clock);
   const persistentStore = options.dbPath
     ? options.storeFactory?.(options.dbPath) ?? new DurableStore(options.dbPath)
     : undefined;
@@ -623,6 +1144,26 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
     persistentStore?.close();
     throw error;
   }
+  const dependencyReadiness = {
+    database: Boolean(persistentStore),
+    identityProvider: Boolean(identityProvider),
+    // No remote custody or partner transport adapter is composed in this lab.
+    auditCustody: false,
+    partnerTransport: false,
+  };
+  const publishReadiness = () => telemetry.setReadiness(dependencyReadiness);
+  publishReadiness();
+  const dependencyFailed = (dependency: keyof typeof dependencyReadiness) => {
+    dependencyReadiness[dependency] = false;
+    telemetry.recordDependencyFailure();
+    publishReadiness();
+  };
+  const dependencyRecovered = (
+    dependency: keyof typeof dependencyReadiness,
+  ) => {
+    dependencyReadiness[dependency] = true;
+    publishReadiness();
+  };
   const persist = () => {
     if (!persistentStore) return;
     if (persistedVersion === undefined) {
@@ -724,10 +1265,22 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
       );
     }
   };
-  const listeners = new Set<ServerResponse>();
-  const broadcast = () => {
+  const sseLimit = options.sseLimit === false ? undefined : options.sseLimit ?? DEFAULT_SSE_LIMIT;
+  const sseHeartbeatMs = options.sseHeartbeatMs ?? DEFAULT_SSE_HEARTBEAT_MS;
+  interface SseListener {
+    res: ServerResponse;
+    clientKey: string;
+    tenantId: string;
+    heartbeat: ReturnType<typeof setInterval>;
+    cleanup: () => void;
+  }
+  const listeners = new Set<SseListener>();
+  const ssePerClient = new Map<string, number>();
+  const broadcast = (tenantId = "") => {
     const payload = `event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`;
-    for (const listener of listeners) listener.write(payload);
+    for (const listener of listeners) {
+      if (listener.tenantId === tenantId) listener.res.write(payload);
+    }
   };
   const succeed = (action: string, message: string, code: ReasonCode) => {
     state.lastResult = {
@@ -754,19 +1307,229 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
 
   const server = createServer(async (req, res) => {
     applySecurityHeaders(res);
+    const requestStartedAt = clock();
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    const method = req.method ?? "GET";
+    const requestClass: RequestClass = url.pathname === REALTIME_LAB_API_ROUTES.events
+      ? "sse"
+      : method === "POST"
+      ? "mutation"
+      : url.pathname.startsWith("/api/")
+      ? "read"
+      : "static";
+    const admission = telemetry.enterRequest();
+    if (!admission.admitted) {
+      return serviceOverloaded(res, admission.retryAfterSeconds ?? 1);
+    }
+    let requestObservationComplete = false;
+    const completeRequestObservation = (
+      forcedOutcome?: RequestOutcome,
+      record = true,
+    ) => {
+      if (requestObservationComplete) return;
+      requestObservationComplete = true;
+      admission.release?.();
+      if (!record) return;
+      const outcome: RequestOutcome = forcedOutcome ??
+        (res.statusCode >= 500
+          ? "server_error"
+          : res.statusCode >= 400
+          ? "client_error"
+          : "success");
+      telemetry.recordRequest(
+        requestClass,
+        outcome,
+        Math.min(3_600_000, Math.max(0, clock() - requestStartedAt)),
+      );
+    };
+    res.once("finish", () => completeRequestObservation());
+    res.once("close", () => {
+      if (!res.writableFinished) completeRequestObservation("server_error");
+    });
+    let activeTenantId = "";
     let rollbackSnapshot: PersistedLabSnapshot | undefined;
     let idempotency: RequestIdempotency | undefined;
     const finalize = (status: number, body: unknown) => {
       const saved = persistResponse(idempotency, { status, body });
-      if (!saved.replayed) broadcast();
+      if (sessionBoundary) tenantStates.set(activeTenantId, state);
+      if (!saved.replayed) broadcast(activeTenantId);
       return json(res, saved.response.status, saved.response.body);
     };
     try {
-      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      const manifestEntry = findRouteManifestEntry(url.pathname);
+      if (manifestEntry && !manifestEntry.methods.includes(method)) {
+        return methodNotAllowed(res, method, manifestEntry.methods);
+      }
+      let activeSession: AuthenticatedSession | undefined;
+      if (
+        sessionBoundary &&
+        url.pathname === REALTIME_LAB_API_ROUTES.sessionLogin &&
+        method === "POST"
+      ) {
+        const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+        if (!allowedOrigins.has(origin)) {
+          return json(res, 403, {
+            code: "UNTRUSTED_ORIGIN",
+            error: "An exact allowed Origin is required.",
+          });
+        }
+        const token = bearerToken(req);
+        let session: AuthenticatedSession | undefined;
+        try {
+          if (identityProvider?.type === "bootstrap-controlled-demo") {
+            session = sessionBoundary.login(token ?? "");
+          } else if (identityProvider?.type === "oidc") {
+            const identity: VerifiedIdentity = await oidcVerifier!.verify(token ?? "");
+            dependencyRecovered("identityProvider");
+            session = sessionBoundary.issue({
+              principalId: identity.principalId,
+              tenantId: identity.tenantId,
+              roles: identity.roles,
+            }, identity.expiresAt * 1_000);
+          }
+        } catch (error) {
+          if (error instanceof Error && error.message === "session limit reached") {
+            return json(res, 429, {
+              code: "SESSION_LIMIT_REACHED",
+              error: "The bounded session limit has been reached.",
+            });
+          }
+          if (error instanceof IdentityVerificationError) {
+            if (
+              error.code === "jwks_unavailable" ||
+              error.code === "jwks_invalid"
+            ) {
+              dependencyFailed("identityProvider");
+            }
+            return json(res, 401, {
+              code: "AUTHENTICATION_FAILED",
+              error: "Authentication failed.",
+            });
+          }
+          if (
+            error instanceof Error &&
+              ["identity already expired", "invalid authenticated principal"].includes(
+                error.message,
+              )
+          ) {
+            return json(res, 401, {
+              code: "AUTHENTICATION_FAILED",
+              error: "Authentication failed.",
+            });
+          }
+          dependencyFailed("identityProvider");
+          throw error;
+        }
+        if (!session) {
+          return json(res, 401, {
+            code: "AUTHENTICATION_FAILED",
+            error: "Authentication failed.",
+          });
+        }
+        const secure = authenticatedAccess?.cookieSecure !== false;
+        res.setHeader(
+          "set-cookie",
+          `airlock_session=${encodeURIComponent(session.sessionId)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.max(1, Math.floor((session.expiresAt - clock()) / 1_000))}${secure ? "; Secure" : ""}`,
+        );
+        return json(res, 200, {
+          principal: session.principal,
+          csrfToken: session.csrfToken,
+          expiresAt: new Date(session.expiresAt).toISOString(),
+        });
+      }
+      if (
+        sessionBoundary &&
+        url.pathname.startsWith("/api/") &&
+        url.pathname !== REALTIME_LAB_API_ROUTES.health
+      ) {
+        const sessionId = cookieValue(req, "airlock_session");
+        activeSession = sessionBoundary.authenticate(sessionId ?? "");
+        if (!activeSession) {
+          return json(res, 401, {
+            code: "AUTHENTICATION_REQUIRED",
+            error: "A valid authenticated session is required.",
+          });
+        }
+        activeTenantId = activeSession.principal.tenantId;
+        if (method === "POST") {
+          const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+          const csrf = typeof req.headers["x-csrf-token"] === "string"
+            ? req.headers["x-csrf-token"]
+            : undefined;
+          if (!allowedOrigins.has(origin) || !sessionBoundary.verifyCsrf(activeSession, csrf)) {
+            return json(res, 403, {
+              code: "CSRF_INVALID",
+              error: "CSRF validation failed.",
+            });
+          }
+        }
+        if (
+          url.pathname === REALTIME_LAB_API_ROUTES.sessionCurrent &&
+          (method === "GET" || method === "HEAD")
+        ) {
+          return json(res, 200, {
+            principal: activeSession.principal,
+            expiresAt: new Date(activeSession.expiresAt).toISOString(),
+          }, method);
+        }
+        if (
+          url.pathname === REALTIME_LAB_API_ROUTES.sessionLogout &&
+          method === "POST"
+        ) {
+          sessionBoundary.revoke(activeSession.sessionId);
+          res.setHeader(
+            "set-cookie",
+            "airlock_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0",
+          );
+          return json(res, 200, { loggedOut: true });
+        }
+        const roles = activeSession.principal.roles;
+        const authorized = method === "POST"
+          ? roles.includes("operator")
+          : roles.includes("operator") || roles.includes("viewer");
+        if (!authorized) {
+          return json(res, 403, {
+            code: "TENANT_FORBIDDEN",
+            error: "The authenticated principal is not authorized for this operation.",
+          });
+        }
+        if (method !== "POST") {
+          state = tenantStates.get(activeTenantId) ?? freshState();
+          tenantStates.set(activeTenantId, state);
+        }
+      }
+      if (
+        !sessionBoundary &&
+        ([
+          REALTIME_LAB_API_ROUTES.sessionLogin,
+          REALTIME_LAB_API_ROUTES.sessionCurrent,
+          REALTIME_LAB_API_ROUTES.sessionLogout,
+        ] as readonly string[]).includes(url.pathname)
+      ) {
+        return json(res, 409, {
+          code: "DOMAIN_REJECTED",
+          error: "Session endpoints require authenticated access mode.",
+        }, method);
+      }
+      // Manifest-driven 405 dispatch runs before ANY body read, idempotency
+      // lookup, or rate-limit check: a wrong-method request to a known route
+      // must be fully side-effect-free, exactly like the HEAD zero-body rule
+      // below. An unrecognized path has no manifest entry and falls through
+      // unchanged to the existing GET/HEAD-or-404 handling further down.
       let requestBody: Buffer<ArrayBufferLike> = Buffer.alloc(0);
       if (req.method === "POST" && url.pathname.startsWith("/api/")) {
-        enforceMutationSource(req);
+        // Authenticated mode already required an exact configured Origin plus
+        // the per-session CSRF secret above. Simulator mode retains its
+        // reflected same-origin/Host boundary for local browser use.
+        if (!sessionBoundary) enforceMutationSource(req);
         requestBody = await readBoundedBody(req);
+        if (sessionBoundary) {
+          // Select tenant state only after the last awaited body read. All
+          // state-machine work below is synchronous, preventing another
+          // request from switching the shared compatibility binding mid-use.
+          state = tenantStates.get(activeTenantId) ?? freshState();
+          tenantStates.set(activeTenantId, state);
+        }
         const canonicalBody = canonicalMutationBody(req, requestBody);
         idempotency = requestIdempotency(
           req,
@@ -796,27 +1559,118 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           }
           if (replay) return json(res, replay.status, replay.body);
         }
+        // Rate limit AFTER the idempotent-replay short-circuit (a replay is a
+        // no-op that must always return its stored response) and BEFORE any
+        // state snapshot/mutation (a rejected request must not mutate).
+        if (rateLimiter) {
+          const decision = rateLimiter.take(resolveClientKey(req, trustedProxies));
+          if (!decision.allowed) {
+            return rateLimited(res, decision.retryAfterSeconds);
+          }
+        }
         rollbackSnapshot = snapshotLabState(state);
       }
-      if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.health) {
-        return json(res, 200, { ok: true, simulator: true });
+      if (
+        (req.method === "GET" || req.method === "HEAD") &&
+        url.pathname === REALTIME_LAB_API_ROUTES.health
+      ) {
+        return json(res, 200, {
+          ok: true,
+          simulator: true,
+          buildId,
+          staticAssetDigest,
+          service: telemetry.snapshot(new Date(clock())),
+        }, req.method);
       }
-      if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.state) {
-        return json(res, 200, publicSnapshot(state));
+      if (
+        (req.method === "GET" || req.method === "HEAD") &&
+        url.pathname === REALTIME_LAB_API_ROUTES.state
+      ) {
+        return json(res, 200, publicSnapshot(state), req.method);
       }
       if (req.method === "GET" && url.pathname === REALTIME_LAB_API_ROUTES.events) {
+        // Bound concurrent streams BEFORE sending the SSE head, so a rejection
+        // is a normal 429 (EventSource surfaces it via onerror) rather than a
+        // half-open stream. Global cap first, then per-client cap.
+        if (sseLimit) {
+          const clientKey = resolveClientKey(req, trustedProxies);
+          const perClient = ssePerClient.get(clientKey) ?? 0;
+          if (listeners.size >= sseLimit.maxTotal || perClient >= sseLimit.maxPerClient) {
+            // Retry-After is advisory: streams free as clients disconnect.
+            return rateLimited(res, 1);
+          }
+          const sseAdmission = telemetry.enterSse();
+          if (!sseAdmission.admitted) {
+            completeRequestObservation(undefined, false);
+            return serviceOverloaded(res, sseAdmission.retryAfterSeconds ?? 1);
+          }
+          res.writeHead(200, {
+            "content-type": "text/event-stream",
+            "cache-control": "no-store",
+            connection: "keep-alive",
+          });
+          res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`);
+          completeRequestObservation("success");
+          const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), sseHeartbeatMs);
+          // Do not let the heartbeat timer keep the process alive on its own.
+          heartbeat.unref?.();
+          let released = false;
+          const listener: SseListener = {
+            res,
+            clientKey,
+            tenantId: activeTenantId,
+            heartbeat,
+            cleanup: () => {
+              if (released) return; // idempotent: close AND error may both fire
+              released = true;
+              sseAdmission.release?.();
+              clearInterval(heartbeat);
+              listeners.delete(listener);
+              const next = (ssePerClient.get(clientKey) ?? 1) - 1;
+              if (next <= 0) ssePerClient.delete(clientKey);
+              else ssePerClient.set(clientKey, next);
+            },
+          };
+          listeners.add(listener);
+          ssePerClient.set(clientKey, perClient + 1);
+          req.on("close", listener.cleanup);
+          res.on("close", listener.cleanup);
+          res.on("error", listener.cleanup);
+          return;
+        }
+        // Unbounded mode (sseLimit disabled): original behavior with cleanup.
+        const sseAdmission = telemetry.enterSse();
+        if (!sseAdmission.admitted) {
+          completeRequestObservation(undefined, false);
+          return serviceOverloaded(res, sseAdmission.retryAfterSeconds ?? 1);
+        }
         res.writeHead(200, {
           "content-type": "text/event-stream",
           "cache-control": "no-store",
           connection: "keep-alive",
         });
-        listeners.add(res);
         res.write(`event: state\ndata: ${JSON.stringify(publicSnapshot(state))}\n\n`);
-        const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
-        req.on("close", () => {
-          clearInterval(heartbeat);
-          listeners.delete(res);
-        });
+        completeRequestObservation("success");
+        const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), sseHeartbeatMs);
+        heartbeat.unref?.();
+        let released = false;
+        const listener: SseListener = {
+          res,
+          clientKey: "",
+          tenantId: activeTenantId,
+          heartbeat,
+          cleanup: () => {
+            if (released) return;
+            released = true;
+            sseAdmission.release?.();
+            clearInterval(heartbeat);
+            listeners.delete(listener);
+          },
+        };
+        listeners.add(listener);
+        req.on("close", listener.cleanup);
+        res.on("close", listener.cleanup);
+        res.on("error", listener.cleanup);
         return;
       }
 
@@ -1001,12 +1855,20 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         }
       }
 
-      if (req.method === "GET") {
+      // Scope decision (documented in docs/HEAD_REQUESTS.md): HEAD is
+      // supported for these root/static routes, matching GET's status and
+      // headers exactly with no body — RFC 7231 §4.3.2. /api/health and
+      // /api/state also accept HEAD (handled above); the Content-Length in
+      // that case describes the snapshot as of this instant only, same as
+      // any HEAD against dynamic content. /api/events remains GET-only: an
+      // open-ended SSE stream has no fixed body to describe the length of,
+      // so HEAD's contract does not apply there.
+      if (req.method === "GET" || req.method === "HEAD") {
         const relative = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
-        if (!["index.html", "app.js", "styles.css"].includes(relative)) {
-          return json(res, 404, { code: "NOT_FOUND", error: "not found" });
+        if (!STATIC_ASSET_NAMES.includes(relative as typeof STATIC_ASSET_NAMES[number])) {
+          return json(res, 404, { code: "NOT_FOUND", error: "not found" }, req.method);
         }
-        const body = await readFile(join(PUBLIC_DIR, relative));
+        const body = staticAssets.get(relative)!;
         const types: Record<string, string> = {
           ".html": "text/html; charset=utf-8",
           ".js": "text/javascript; charset=utf-8",
@@ -1017,9 +1879,9 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
           "content-length": body.length,
           "cache-control": "no-store",
         });
-        return res.end(body);
+        return res.end(req.method === "HEAD" ? undefined : body);
       }
-      return json(res, 404, { code: "NOT_FOUND", error: "not found" });
+      return json(res, 404, { code: "NOT_FOUND", error: "not found" }, req.method);
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown error";
       if (error instanceof HttpError) {
@@ -1029,6 +1891,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         });
       }
       if (error instanceof PersistenceError) {
+        dependencyFailed("database");
         state = error.authoritativeState ??
           (rollbackSnapshot ? restoreLabState(rollbackSnapshot) : state);
         return json(res, error.status, {
@@ -1063,6 +1926,7 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
         });
       } catch (persistError) {
         if (persistError instanceof PersistenceError) {
+          dependencyFailed("database");
           state = persistError.authoritativeState ??
             (rollbackSnapshot ? restoreLabState(rollbackSnapshot) : state);
           return json(res, persistError.status, {
@@ -1075,17 +1939,102 @@ export function createLabServer(options: CreateLabServerOptions = {}) {
       }
     }
   });
-  server.on("close", () => persistentStore?.close());
+  server.on("close", () => {
+    // Deterministically tear down every live SSE stream: clear its heartbeat,
+    // end the response, and drop registry entries so no timer or listener leaks
+    // past server shutdown.
+    for (const listener of [...listeners]) {
+      clearInterval(listener.heartbeat);
+      listener.cleanup();
+      try {
+        listener.res.end();
+      } catch {
+        // response may already be closing; teardown must not throw
+      }
+    }
+    listeners.clear();
+    ssePerClient.clear();
+    persistentStore?.close();
+  });
   return server;
+}
+
+/**
+ * Parse `AIRLOCK_RATE_LIMIT` of the form "capacity:refillPerSecond[:maxClients]"
+ * (e.g. "300:150" or "300:150:10000"). "off"/"disabled"/"0" disables the
+ * limiter. Returns undefined for an unset/blank var (uses the default).
+ */
+export function parseRateLimitEnv(
+  raw: string | undefined,
+): RateLimitConfig | false | undefined {
+  if (raw === undefined) return undefined;
+  const value = raw.trim().toLowerCase();
+  if (value === "") return undefined;
+  if (value === "off" || value === "disabled" || value === "0") return false;
+  const parts = value.split(":");
+  const capacity = Number(parts[0]);
+  const refillPerSecond = Number(parts[1]);
+  const maxClients = parts[2] === undefined ? DEFAULT_RATE_LIMIT.maxClients : Number(parts[2]);
+  if (
+    !Number.isFinite(capacity) || capacity < 1 ||
+    !Number.isFinite(refillPerSecond) || refillPerSecond <= 0 ||
+    !Number.isInteger(maxClients) || maxClients < 1
+  ) {
+    throw new Error(
+      'AIRLOCK_RATE_LIMIT must be "capacity:refillPerSecond[:maxClients]" or "off"',
+    );
+  }
+  return { capacity, refillPerSecond, maxClients };
+}
+
+export function parseBuildId(raw: string | undefined): string {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_BUILD_ID;
+  const value = raw.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value)) {
+    throw new Error(
+      "AIRLOCK_BUILD_ID must be 1-64 characters: letters, digits, dot, underscore, or hyphen",
+    );
+  }
+  return value;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const host = process.env.AIRLOCK_HOST ?? "127.0.0.1";
   const port = Number(process.env.AIRLOCK_PORT ?? 8788);
   const dbPath = process.env.AIRLOCK_DB_PATH;
-  createLabServer(dbPath ? { dbPath } : {}).listen(port, host, () => {
+  const rateLimit = parseRateLimitEnv(process.env.AIRLOCK_RATE_LIMIT);
+  const trustedProxies = (process.env.AIRLOCK_TRUSTED_PROXIES ?? "")
+    .split(",")
+    .map((proxy) => proxy.trim())
+    .filter(Boolean);
+  const simulatorMode = process.env.AIRLOCK_SIMULATOR_MODE === "true";
+  const authConfigPath = process.env.AIRLOCK_AUTH_CONFIG_PATH;
+  if (simulatorMode === Boolean(authConfigPath)) {
+    throw new Error(
+      "Set exactly one of AIRLOCK_SIMULATOR_MODE=true or AIRLOCK_AUTH_CONFIG_PATH; startup fails closed by default.",
+    );
+  }
+  const access: CreateLabServerOptions["access"] = simulatorMode
+    ? { mode: "simulator" }
+    : {
+      ...JSON.parse(readFileSync(authConfigPath!, "utf8")),
+      mode: "authenticated",
+    };
+  createLabServer({
+    access,
+    buildId: process.env.AIRLOCK_BUILD_ID,
+    ...(dbPath ? { dbPath } : {}),
+    ...(rateLimit !== undefined ? { rateLimit } : {}),
+    ...(trustedProxies.length ? { trustedProxies } : {}),
+  }).listen(port, host, () => {
     console.log(`Contactless Airlock Lab: http://${host}:${port}`);
     console.log("SIMULATOR ONLY — no real payment network or customer data is connected.");
+    console.log(
+      rateLimit === false
+        ? "Per-client mutation rate limiting: DISABLED (AIRLOCK_RATE_LIMIT=off)."
+        : "Per-client mutation rate limiting: ENABLED (in-process, single-instance only; " +
+            "distributed/edge enforcement is external).",
+    );
     if (dbPath) {
       console.log(`SIMULATOR-ONLY persistence enabled at ${dbPath}; synthetic exportable demo keys are stored there.`);
     }

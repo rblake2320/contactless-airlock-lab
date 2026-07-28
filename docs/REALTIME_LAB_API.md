@@ -5,10 +5,32 @@ The OpenAPI 3.1 document at
 realtime-lab server exactly.
 
 This is a simulator contract, not a proposed production issuer, processor,
-wallet, TSP, network, or merchant API. It uses fixed synthetic identities,
-creates synthetic ECDSA keys in the lab, and has no partner authentication or
-payment-rail connection. A production partner contract remains a separate P1/P4
-deliverable.
+wallet, TSP, network, or merchant API. It uses fixed synthetic identities and
+creates synthetic ECDSA keys in the lab. Its optional authenticated profile
+protects the lab boundary; it is not partner or payment-rail authentication.
+See `AUTH_SESSION_BOUNDARY.md`.
+
+Authenticated mode adds `POST /api/session/login`, `GET /api/session`, and
+`POST /api/session/logout`. All other API routes except health require the
+session cookie in that mode; mutations additionally require an exact allowed
+Origin and `X-CSRF-Token`.
+
+OpenAPI represents both runtime profiles explicitly. On shared lab operations,
+`security: [{}, {sessionCookie: []}]` means unauthenticated access exists only
+in the explicitly selected simulator profile, while the named
+`x-airlock-access-profiles.authenticated` policy enumerates every
+session-protected operation and every mutation requiring `Origin` plus
+`X-CSRF-Token`. Health is public; login alone uses the provider-neutral
+`loginBearer` scheme. Its selected authenticated profile is either an opaque
+`bootstrap-controlled-demo` credential or an OIDC JWT access token; the two
+providers are mutually exclusive and OIDC never falls back to bootstrap.
+
+OIDC access-token verification is composed into session login and exercised by
+runtime tests; the contract records `oidcRuntimeComposition: true`. This proves
+the local adapter/session composition, not real-IdP operational readiness.
+WebAuthn remains outside session login and is recorded independently as
+`webAuthnRuntimeComposition: false`. The two states must not be collapsed into
+one combined identity flag.
 
 ## Mutation controls
 
@@ -28,6 +50,15 @@ decimal string with at most two fractional digits and must fit in JavaScript's
 safe-integer minor-unit range. Its merchant ID is 1–64 characters in the
 documented ASCII set. Other mutations require no body; if a body is supplied,
 the current server accepts any JSON object and ignores its properties.
+
+Each `POST /api/*` request is additionally subject to a per-client mutation rate
+limit. When a client exceeds it the server returns `429` with a `Retry-After`
+header (whole seconds) and a `RATE_LIMITED` reason code, and **no state change
+occurs**. `GET` reads (`/api/state`, `/api/health`, `/api/events`) are never
+limited, and a persisted idempotent replay returns its stored response without
+consuming a token. This is an in-process, single-instance control only — it is
+not distributed or production enforcement; see
+[`REALTIME_LAB_RATE_LIMIT.md`](REALTIME_LAB_RATE_LIMIT.md).
 
 ## Stable reason codes
 

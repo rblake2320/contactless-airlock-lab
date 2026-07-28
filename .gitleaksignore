@@ -1,0 +1,4 @@
+# Synthetic idempotency label in an adversarial customer-operations unit test.
+# This is not a credential; retain the exact historical fingerprint so any
+# other generic-key finding still fails the full-history scan.
+954d7af4acac424fa6c010be9efae61b62f4e73d:tests/customer-operations.test.ts:generic-api-key:105
