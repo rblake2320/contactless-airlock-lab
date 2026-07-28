@@ -177,8 +177,11 @@ All items below must be complete before proposing a controlled partner pilot.
       real boundaries from a clean checkout.
 - [ ] Signed build provenance and artifact attestation remain unimplemented;
       the release-evidence bundle explicitly claims neither.
-- [ ] Performance evidence states hardware, concurrency, dataset, warm/cold
-      state, and partner/simulator involvement.
+- [x] Controlled-demo performance evidence states the tested commit/build,
+      hardware, process count, concurrency, warm/cold state, duration, loopback
+      simulator involvement, request counts, p95 latencies, and policy result
+      (`evidence/capacity/954d7af.json`). It does not authorize public,
+      multi-user, partner, or payment traffic.
 - [x] The opt-in capacity gate requires and records commit/build identity,
       hardware/process context, concurrency, warm/cold declaration, duration,
       loopback-only scope, latency percentiles, success ratio, and overload

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": "airlock.capacity-evidence.v1",
+  "generatedAt": "2026-07-28T21:53:10.52Z",
+  "policySchemaVersion": "airlock.launch-policy.v1",
+  "policyProfile": "controlled-single-user-demo",
+  "metadata": {
+    "commit": "954d7af7f226cd44cc41077598858db0c3834ac2",
+    "buildId": "954d7af",
+    "hardware": "DESKTOP-CM6G60N win32 10.0.26200 16cpu 134877249536bytes",
+    "processCount": 1,
+    "concurrency": 16,
+    "warmState": "warm",
+    "durationSeconds": 301,
+    "targetUrl": "http://127.0.0.1:8791"
+  },
+  "measurement": {
+    "totalRequests": 30004,
+    "successfulRequests": 30004,
+    "readP95Milliseconds": 4.9988999999914085,
+    "mutationP95Milliseconds": 7.215199999991455,
+    "completeSyntheticCycleP95Milliseconds": 16.793000000000006,
+    "peakConcurrentRequests": 16,
+    "peakConcurrentSseStreams": 0
+  },
+  "evaluation": {
+    "passed": true,
+    "failures": []
+  }
+}
