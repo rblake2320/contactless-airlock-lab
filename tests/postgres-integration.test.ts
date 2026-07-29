@@ -142,9 +142,14 @@ test("PostgreSQL adapter proves tenant CAS, idempotency, outbox, and cap races",
         new Date(`2026-07-28T12:00:0${index}Z`),
       );
     }
+    // The idempotent operation above timestamps its outbox event with the real
+    // database clock. Use a claim instant after that committed row instead of
+    // a fixed wall-clock value that can precede the test run and make an
+    // otherwise-ready fourth event ineligible.
+    const claimNow = new Date(Date.now() + 60_000);
     const claimed = (await Promise.all([
-      first.claimOutbox(tenant, "worker-a", 2, 30_000, new Date("2026-07-28T12:01:00Z")),
-      second.claimOutbox(tenant, "worker-b", 2, 30_000, new Date("2026-07-28T12:01:00Z")),
+      first.claimOutbox(tenant, "worker-a", 2, 30_000, claimNow),
+      second.claimOutbox(tenant, "worker-b", 2, 30_000, claimNow),
     ])).flat();
     assert.equal(claimed.length, 4);
     assert.equal(new Set(claimed.map((event) => event.eventId)).size, 4);
